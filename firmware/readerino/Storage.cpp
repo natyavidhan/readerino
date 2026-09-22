@@ -2,6 +2,7 @@
 #include "Config.h"
 #include <SD.h>
 #include <string.h>
+#include <vector>
 
 namespace {
   const char *CATALOG_PATH = "/catalog.bin";
@@ -16,12 +17,26 @@ namespace {
   const int BMCOUNT_OFF = 120;
   const int BOOKMARKS_OFF = 124;
 
-  // Kept open for the whole session instead of re-opening per call: opening
-  // a file (FAT directory lookup) is far more expensive than a seek on an
-  // already-open handle, and the library screen can call getEntry() several
-  // times per redraw.
-  File catalogFile;
-  int cachedCount = 0;
+  // Individual SD reads on this hardware cost ~10ms each regardless of
+  // whether the file is already open (measured: 212 reads = 2140ms, 6 reads
+  // = 64ms — a flat per-read cost, not a per-open one). Any screen that
+  // needs to look at more than a handful of records — the bookmarks screen
+  // scans every book — is unusably slow if it hits the SD card per record.
+  // So the catalog is parsed into RAM once (~156 bytes/book, ~33KB for a
+  // 212-book library) and reads are served from there; only the two writers
+  // (setPosition/addBookmark) still touch the SD card, to persist changes.
+  struct CachedRecord {
+    char filename[FILENAME_LEN];
+    char title[TITLE_LEN];
+    char author[AUTHOR_LEN];
+    uint32_t totalLines;
+    uint32_t position;
+    uint8_t bookmarkCount;
+    uint32_t bookmarks[MAX_BOOKMARKS];
+  };
+
+  std::vector<CachedRecord> cache;
+  File catalogFile; // kept open for the session so writes can seek in place
 
   uint32_t readU32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -34,12 +49,23 @@ namespace {
     p[3] = (v >> 24) & 0xFF;
   }
 
-  String readFixedString(const uint8_t *p, int len) {
-    char buf[49]; // max(FILENAME_LEN, TITLE_LEN, AUTHOR_LEN) + 1
-    int n = len < (int)sizeof(buf) - 1 ? len : (int)sizeof(buf) - 1;
-    memcpy(buf, p, n);
-    buf[n] = 0; // packer null-pads every field, so this is always within bounds
-    return String(buf);
+  void readFixedCStr(const uint8_t *p, int len, char *out, int outSize) {
+    int n = len < outSize - 1 ? len : outSize - 1;
+    memcpy(out, p, n);
+    out[n] = 0; // packer null-pads every field, so this is always within bounds
+  }
+
+  void parseRecord(const uint8_t *rec, CachedRecord &c) {
+    readFixedCStr(rec + FILENAME_OFF, FILENAME_LEN, c.filename, sizeof(c.filename));
+    readFixedCStr(rec + TITLE_OFF, TITLE_LEN, c.title, sizeof(c.title));
+    readFixedCStr(rec + AUTHOR_OFF, AUTHOR_LEN, c.author, sizeof(c.author));
+    c.totalLines = readU32(rec + TOTALLINES_OFF);
+    c.position = readU32(rec + POSITION_OFF);
+    c.bookmarkCount = rec[BMCOUNT_OFF];
+    if (c.bookmarkCount > MAX_BOOKMARKS) c.bookmarkCount = MAX_BOOKMARKS;
+    for (int i = 0; i < MAX_BOOKMARKS; i++) {
+      c.bookmarks[i] = readU32(rec + BOOKMARKS_OFF + i * 4);
+    }
   }
 
   uint32_t recordOffset(int index) {
@@ -53,13 +79,12 @@ bool Storage::begin() {
 }
 
 bool Storage::rescan() {
+  cache.clear();
   if (catalogFile) catalogFile.close();
-  cachedCount = 0;
 
   if (!SD.exists(CATALOG_PATH)) return false;
-  // "r+": read/write, no truncation. Held open for both reads (getEntry)
-  // and in-place writes (setPosition/addBookmark) for the rest of the
-  // session; FILE_WRITE ("w") would truncate the whole catalog on open.
+  // "r+": read/write, no truncation — FILE_WRITE ("w") would truncate the
+  // whole catalog on open. Held open for the rest of the session.
   catalogFile = SD.open(CATALOG_PATH, "r+");
   if (!catalogFile) return false;
 
@@ -70,34 +95,49 @@ bool Storage::rescan() {
     catalogFile.close();
     return false;
   }
-  cachedCount = header[6] | (header[7] << 8); // recordCount, uint16 LE
-  return true;
-}
+  int count = header[6] | (header[7] << 8); // recordCount, uint16 LE
+  cache.reserve(count);
 
-int Storage::bookCount() { return cachedCount; }
-
-bool Storage::getEntry(int index, CatalogEntry &out) {
-  if (index < 0 || index >= cachedCount || !catalogFile) return false;
-  catalogFile.seek(recordOffset(index));
-  uint8_t rec[RECORD_SIZE];
-  int n = catalogFile.read(rec, RECORD_SIZE);
-  if (n != RECORD_SIZE) return false;
-
-  out.filename = readFixedString(rec + FILENAME_OFF, FILENAME_LEN);
-  out.title = readFixedString(rec + TITLE_OFF, TITLE_LEN);
-  out.author = readFixedString(rec + AUTHOR_OFF, AUTHOR_LEN);
-  out.totalLines = readU32(rec + TOTALLINES_OFF);
-  out.position = readU32(rec + POSITION_OFF);
-  out.bookmarkCount = rec[BMCOUNT_OFF];
-  if (out.bookmarkCount > MAX_BOOKMARKS) out.bookmarkCount = MAX_BOOKMARKS;
-  for (int i = 0; i < MAX_BOOKMARKS; i++) {
-    out.bookmarks[i] = readU32(rec + BOOKMARKS_OFF + i * 4);
+  // Load in a handful of large sequential reads rather than one read per
+  // record — far fewer SD transactions for the same ~10ms/transaction cost.
+  const int RECORDS_PER_CHUNK = 24;
+  uint8_t chunkBuf[RECORDS_PER_CHUNK * RECORD_SIZE]; // ~3.7KB, stack-local, freed on return
+  int loaded = 0;
+  while (loaded < count) {
+    int want = count - loaded;
+    if (want > RECORDS_PER_CHUNK) want = RECORDS_PER_CHUNK;
+    int got = catalogFile.read(chunkBuf, want * RECORD_SIZE);
+    int gotRecords = got / RECORD_SIZE;
+    for (int i = 0; i < gotRecords; i++) {
+      CachedRecord c;
+      parseRecord(chunkBuf + i * RECORD_SIZE, c);
+      cache.push_back(c);
+    }
+    loaded += gotRecords;
+    if (gotRecords < want) break; // short read; stop rather than loop forever
   }
   return true;
 }
 
+int Storage::bookCount() { return (int)cache.size(); }
+
+bool Storage::getEntry(int index, CatalogEntry &out) {
+  if (index < 0 || index >= (int)cache.size()) return false;
+  const CachedRecord &c = cache[index];
+  out.filename = String(c.filename);
+  out.title = String(c.title);
+  out.author = String(c.author);
+  out.totalLines = c.totalLines;
+  out.position = c.position;
+  out.bookmarkCount = c.bookmarkCount;
+  for (int i = 0; i < MAX_BOOKMARKS; i++) out.bookmarks[i] = c.bookmarks[i];
+  return true;
+}
+
 void Storage::setPosition(int index, uint32_t line) {
-  if (index < 0 || index >= cachedCount || !catalogFile) return;
+  if (index < 0 || index >= (int)cache.size() || !catalogFile) return;
+  cache[index].position = line;
+
   catalogFile.seek(recordOffset(index) + POSITION_OFF);
   uint8_t buf[4];
   writeU32(buf, line);
@@ -106,32 +146,31 @@ void Storage::setPosition(int index, uint32_t line) {
 }
 
 void Storage::addBookmark(int index, uint32_t line) {
-  if (index < 0 || index >= cachedCount || !catalogFile) return;
-  CatalogEntry entry;
-  if (!getEntry(index, entry)) return;
+  if (index < 0 || index >= (int)cache.size() || !catalogFile) return;
+  CachedRecord &c = cache[index];
 
-  for (uint8_t i = 0; i < entry.bookmarkCount; i++) {
-    if (entry.bookmarks[i] == line) return; // already bookmarked
+  for (uint8_t i = 0; i < c.bookmarkCount; i++) {
+    if (c.bookmarks[i] == line) return; // already bookmarked
   }
 
-  if (entry.bookmarkCount < MAX_BOOKMARKS) {
-    entry.bookmarks[entry.bookmarkCount] = line;
-    entry.bookmarkCount++;
+  if (c.bookmarkCount < MAX_BOOKMARKS) {
+    c.bookmarks[c.bookmarkCount] = line;
+    c.bookmarkCount++;
   } else {
     // full: drop the oldest bookmark to make room
     for (int i = 0; i < MAX_BOOKMARKS - 1; i++) {
-      entry.bookmarks[i] = entry.bookmarks[i + 1];
+      c.bookmarks[i] = c.bookmarks[i + 1];
     }
-    entry.bookmarks[MAX_BOOKMARKS - 1] = line;
+    c.bookmarks[MAX_BOOKMARKS - 1] = line;
   }
 
   catalogFile.seek(recordOffset(index) + BMCOUNT_OFF);
-  catalogFile.write(&entry.bookmarkCount, 1);
+  catalogFile.write(&c.bookmarkCount, 1);
   uint8_t pad[3] = {0, 0, 0};
   catalogFile.write(pad, 3);
   uint8_t buf[4];
   for (int i = 0; i < MAX_BOOKMARKS; i++) {
-    writeU32(buf, entry.bookmarks[i]);
+    writeU32(buf, c.bookmarks[i]);
     catalogFile.write(buf, 4);
   }
   catalogFile.flush();
