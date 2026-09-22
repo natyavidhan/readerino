@@ -1,0 +1,3 @@
+essays/
+*.txt
+!firmware/**/*.txt
