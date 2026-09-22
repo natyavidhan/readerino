@@ -121,6 +121,23 @@ namespace {
     Serial.println("OK");
   }
 
+  void handleBench(const String &args) {
+    int n = args.toInt();
+    if (n <= 0) n = Storage::bookCount();
+    unsigned long start = millis();
+    CatalogEntry e;
+    int ok = 0;
+    for (int i = 0; i < n; i++) {
+      if (Storage::getEntry(i % Storage::bookCount(), e)) ok++;
+    }
+    unsigned long elapsed = millis() - start;
+    Serial.print("BENCH ");
+    Serial.print(ok);
+    Serial.print(" reads in ");
+    Serial.print(elapsed);
+    Serial.println(" ms");
+  }
+
   void handleList() {
     File root = SD.open("/");
     if (!root) {
@@ -166,6 +183,8 @@ namespace {
         handleSetPos(cmd.substring(7));
       } else if (cmd.startsWith("ADDBM ")) {
         handleAddBookmark(cmd.substring(6));
+      } else if (cmd.startsWith("BENCH")) {
+        handleBench(cmd.length() > 6 ? cmd.substring(6) : String(""));
       } else {
         Serial.println("ERR unknown command");
       }

@@ -5,49 +5,56 @@
 
 namespace {
   Adafruit_SH1106G oled(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
-  const int MENU_ROW_HEIGHT = 10; // 8px glyph + 1px top/bottom padding
-  const int MENU_VISIBLE_ROWS = OLED_HEIGHT / MENU_ROW_HEIGHT;
 
-  // Shared scrollable-list-with-highlight renderer used by both the
-  // library and the bookmarks screens. progressPct is nullable: pass
-  // nullptr for a plain list with no right-aligned progress column.
-  void drawList(const std::vector<String> &labels, const std::vector<int> *progressPct, int selectedIndex) {
+  // Draws an already-windowed list (<= MENU_VISIBLE_ROWS entries). The
+  // highlighted row's label scrolls by marqueeOffsetPx when it overflows;
+  // every other overflowing row is statically truncated with an ellipsis.
+  void drawList(const std::vector<String> &labels, const std::vector<int> *progressPct, int highlightRow, int marqueeOffsetPx) {
     oled.clearDisplay();
     oled.setTextSize(1);
 
-    int total = (int)labels.size();
-    int windowStart = 0;
-    if (selectedIndex >= MENU_VISIBLE_ROWS) windowStart = selectedIndex - MENU_VISIBLE_ROWS + 1;
-    int maxStart = total - MENU_VISIBLE_ROWS;
-    if (maxStart < 0) maxStart = 0;
-    if (windowStart > maxStart) windowStart = maxStart;
-
-    for (int row = 0; row < MENU_VISIBLE_ROWS; row++) {
-      int idx = windowStart + row;
-      if (idx >= total) break;
+    for (int row = 0; row < (int)labels.size(); row++) {
       int y = row * MENU_ROW_HEIGHT;
-      if (idx == selectedIndex) {
-        oled.fillRect(0, y, OLED_WIDTH, MENU_ROW_HEIGHT, SH110X_WHITE);
-        oled.setTextColor(SH110X_BLACK);
-      } else {
-        oled.setTextColor(SH110X_WHITE);
-      }
+      bool selected = (row == highlightRow);
+      uint16_t bg = selected ? SH110X_WHITE : SH110X_BLACK;
+      uint16_t fg = selected ? SH110X_BLACK : SH110X_WHITE;
+
+      if (selected) oled.fillRect(0, y, OLED_WIDTH, MENU_ROW_HEIGHT, SH110X_WHITE);
+      oled.setTextColor(fg);
 
       String progStr = "";
       int maxChars = CHARS_PER_LINE;
-      if (progressPct && idx < (int)progressPct->size() && (*progressPct)[idx] >= 0) {
-        progStr = String((*progressPct)[idx]) + "%";
+      if (progressPct && row < (int)progressPct->size() && (*progressPct)[row] >= 0) {
+        progStr = String((*progressPct)[row]) + "%";
         maxChars -= (int)progStr.length() + 1;
       }
 
-      String label = labels[idx];
-      if ((int)label.length() > maxChars) label = label.substring(0, maxChars);
-      oled.setCursor(2, y + 1);
-      oled.print(label);
+      const String &label = labels[row];
+      bool overflowing = (int)label.length() > maxChars;
 
+      if (selected && overflowing && marqueeOffsetPx > 0) {
+        // actively scrolling: draw the full label shifted left by the
+        // marquee offset; off-screen pixels are clipped by the GFX lib.
+        oled.setCursor(2 - marqueeOffsetPx, y + 1);
+        oled.print(label);
+      } else {
+        String shown = label;
+        if (overflowing) {
+          int cut = maxChars > 3 ? maxChars - 3 : maxChars;
+          shown = label.substring(0, cut) + (maxChars > 3 ? "..." : "");
+        }
+        oled.setCursor(2, y + 1);
+        oled.print(shown);
+      }
+
+      // mask over anything that scrolled under the progress column, then
+      // draw the progress text on top
       if (progStr.length() > 0) {
-        int px = OLED_WIDTH - 2 - (int)progStr.length() * 6;
-        oled.setCursor(px, y + 1);
+        int progPx = (int)progStr.length() * CHAR_PX;
+        int maskX = OLED_WIDTH - 2 - progPx - 2;
+        oled.fillRect(maskX, y, OLED_WIDTH - maskX, MENU_ROW_HEIGHT, bg);
+        oled.setTextColor(fg);
+        oled.setCursor(OLED_WIDTH - 2 - progPx, y + 1);
         oled.print(progStr);
       }
     }
@@ -57,6 +64,7 @@ namespace {
 
 bool Display::begin() {
   Wire.begin(); // SDA=21, SCL=22 (ESP32 defaults)
+  Wire.setClock(400000); // fast-mode I2C; SH1106 modules support it, cuts full-frame push time ~4x
   if (!oled.begin(OLED_I2C_ADDR, true)) return false;
   oled.setRotation(0);
   oled.clearDisplay();
@@ -64,7 +72,7 @@ bool Display::begin() {
   return true;
 }
 
-void Display::showLibrary(const std::vector<String> &titles, const std::vector<int> &progressPct, int selectedIndex, bool sdError) {
+void Display::showLibrary(const std::vector<String> &titles, const std::vector<int> &progressPct, int highlightRow, int marqueeOffsetPx, bool sdError) {
   if (sdError) {
     showMessage("SD/catalog error", "Press any button");
     return;
@@ -73,11 +81,11 @@ void Display::showLibrary(const std::vector<String> &titles, const std::vector<i
     showMessage("No books found", "Push a library from");
     return;
   }
-  drawList(titles, &progressPct, selectedIndex);
+  drawList(titles, &progressPct, highlightRow, marqueeOffsetPx);
 }
 
-void Display::showBookmarksList(const std::vector<String> &labels, int selectedIndex) {
-  drawList(labels, nullptr, selectedIndex);
+void Display::showBookmarksList(const std::vector<String> &labels, int highlightRow, int marqueeOffsetPx) {
+  drawList(labels, nullptr, highlightRow, marqueeOffsetPx);
 }
 
 void Display::showReadingPage(const std::vector<String> &lines, int pageIndex, int pageCount, bool isBookmarked) {
@@ -113,13 +121,10 @@ void Display::showConfirmExit() {
   oled.setCursor(x + 4, y + 6);
   oled.print("Back to menu?");
 
-  // "No" (1st/up button, cancel) on the left, "Yes" (3rd/down button,
-  // confirm) on the right, matching the physical left-to-right button order.
-  const int charW = 6; // default font cell width at textSize 1
   int rowY = y + 18;
   oled.setCursor(x + 8, rowY);
   oled.print("No");
-  oled.setCursor(x + w - 8 - 3 * charW, rowY);
+  oled.setCursor(x + w - 8 - 3 * CHAR_PX, rowY);
   oled.print("Yes");
   oled.display();
 }

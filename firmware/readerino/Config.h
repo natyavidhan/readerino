@@ -22,8 +22,15 @@
 #define CHARS_PER_LINE 21
 #define LINES_PER_PAGE 7
 
-// ---- Storage ----
-#define BOOKMARKS_FILE "/bookmarks.json"
+// ---- List screens (library / bookmarks) ----
+#define MENU_ROW_HEIGHT 10 // 8px glyph + 1px top/bottom padding
+#define MENU_VISIBLE_ROWS (OLED_HEIGHT / MENU_ROW_HEIGHT)
+#define CHAR_PX 6 // default font cell width at textSize 1
+
+// Marquee (scrolling title, only on the highlighted row, only when it
+// overflows the row width)
+#define MARQUEE_STEP_MS 40   // ~25px/sec while actively scrolling
+#define MARQUEE_PAUSE_MS 900 // pause at the start and at full reveal
 
 // ---- Serial file transfer (host -> SD card via USB) ----
 #define TRANSFER_BAUD 460800

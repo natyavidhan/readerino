@@ -16,6 +16,11 @@ namespace {
   const int BMCOUNT_OFF = 120;
   const int BOOKMARKS_OFF = 124;
 
+  // Kept open for the whole session instead of re-opening per call: opening
+  // a file (FAT directory lookup) is far more expensive than a seek on an
+  // already-open handle, and the library screen can call getEntry() several
+  // times per redraw.
+  File catalogFile;
   int cachedCount = 0;
 
   uint32_t readU32(const uint8_t *p) {
@@ -48,20 +53,21 @@ bool Storage::begin() {
 }
 
 bool Storage::rescan() {
-  if (!SD.exists(CATALOG_PATH)) {
-    cachedCount = 0;
-    return false;
-  }
-  File f = SD.open(CATALOG_PATH, FILE_READ);
-  if (!f) {
-    cachedCount = 0;
-    return false;
-  }
+  if (catalogFile) catalogFile.close();
+  cachedCount = 0;
+
+  if (!SD.exists(CATALOG_PATH)) return false;
+  // "r+": read/write, no truncation. Held open for both reads (getEntry)
+  // and in-place writes (setPosition/addBookmark) for the rest of the
+  // session; FILE_WRITE ("w") would truncate the whole catalog on open.
+  catalogFile = SD.open(CATALOG_PATH, "r+");
+  if (!catalogFile) return false;
+
   uint8_t header[CAT_HEADER_SIZE];
-  int n = f.read(header, CAT_HEADER_SIZE);
-  f.close();
+  catalogFile.seek(0);
+  int n = catalogFile.read(header, CAT_HEADER_SIZE);
   if (n != CAT_HEADER_SIZE || memcmp(header, "RCT1", 4) != 0) {
-    cachedCount = 0;
+    catalogFile.close();
     return false;
   }
   cachedCount = header[6] | (header[7] << 8); // recordCount, uint16 LE
@@ -71,13 +77,10 @@ bool Storage::rescan() {
 int Storage::bookCount() { return cachedCount; }
 
 bool Storage::getEntry(int index, CatalogEntry &out) {
-  if (index < 0 || index >= cachedCount) return false;
-  File f = SD.open(CATALOG_PATH, FILE_READ);
-  if (!f) return false;
-  f.seek(recordOffset(index));
+  if (index < 0 || index >= cachedCount || !catalogFile) return false;
+  catalogFile.seek(recordOffset(index));
   uint8_t rec[RECORD_SIZE];
-  int n = f.read(rec, RECORD_SIZE);
-  f.close();
+  int n = catalogFile.read(rec, RECORD_SIZE);
   if (n != RECORD_SIZE) return false;
 
   out.filename = readFixedString(rec + FILENAME_OFF, FILENAME_LEN);
@@ -94,20 +97,16 @@ bool Storage::getEntry(int index, CatalogEntry &out) {
 }
 
 void Storage::setPosition(int index, uint32_t line) {
-  if (index < 0 || index >= cachedCount) return;
-  // "r+": read/write, no truncation, existing bytes elsewhere in the file
-  // are left untouched. FILE_WRITE ("w") would truncate the whole catalog.
-  File f = SD.open(CATALOG_PATH, "r+");
-  if (!f) return;
-  f.seek(recordOffset(index) + POSITION_OFF);
+  if (index < 0 || index >= cachedCount || !catalogFile) return;
+  catalogFile.seek(recordOffset(index) + POSITION_OFF);
   uint8_t buf[4];
   writeU32(buf, line);
-  f.write(buf, 4);
-  f.close();
+  catalogFile.write(buf, 4);
+  catalogFile.flush();
 }
 
 void Storage::addBookmark(int index, uint32_t line) {
-  if (index < 0 || index >= cachedCount) return;
+  if (index < 0 || index >= cachedCount || !catalogFile) return;
   CatalogEntry entry;
   if (!getEntry(index, entry)) return;
 
@@ -126,16 +125,14 @@ void Storage::addBookmark(int index, uint32_t line) {
     entry.bookmarks[MAX_BOOKMARKS - 1] = line;
   }
 
-  File f = SD.open(CATALOG_PATH, "r+");
-  if (!f) return;
-  f.seek(recordOffset(index) + BMCOUNT_OFF);
-  f.write(&entry.bookmarkCount, 1);
+  catalogFile.seek(recordOffset(index) + BMCOUNT_OFF);
+  catalogFile.write(&entry.bookmarkCount, 1);
   uint8_t pad[3] = {0, 0, 0};
-  f.write(pad, 3);
+  catalogFile.write(pad, 3);
   uint8_t buf[4];
   for (int i = 0; i < MAX_BOOKMARKS; i++) {
     writeU32(buf, entry.bookmarks[i]);
-    f.write(buf, 4);
+    catalogFile.write(buf, 4);
   }
-  f.close();
+  catalogFile.flush();
 }

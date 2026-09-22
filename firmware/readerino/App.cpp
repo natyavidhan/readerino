@@ -9,6 +9,7 @@
 
 namespace {
   enum class State { Library, Bookmarks, Reading, ConfirmExit };
+  enum class MarqueePhase { PauseStart, Scrolling, PauseEnd };
 
   State state = State::Library;
   int librarySelection = 0; // 0 = "* Bookmarks" pseudo-row, 1..N = books (catalog index = librarySelection-1)
@@ -28,6 +29,24 @@ namespace {
   std::vector<BookmarkRef> bookmarkRefs; // flat list built fresh each time Bookmarks is entered
   int bookmarkSelection = 0;
 
+  // The currently-visible window for whichever list screen is active
+  // (Library or Bookmarks) — at most MENU_VISIBLE_ROWS entries, refetched
+  // from SD only on real navigation, not on every marquee animation tick.
+  std::vector<String> windowLabels;
+  std::vector<int> windowProgress; // Library only; empty for Bookmarks
+  int windowHighlightRow = 0;
+
+  MarqueePhase marqueePhase = MarqueePhase::PauseStart;
+  int marqueeOffsetPx = 0;
+  unsigned long marqueePhaseStartMs = 0;
+  unsigned long marqueeLastStepMs = 0;
+
+  void resetMarquee() {
+    marqueePhase = MarqueePhase::PauseStart;
+    marqueeOffsetPx = 0;
+    marqueePhaseStartMs = millis();
+  }
+
   bool isBookmarkedHere() {
     for (uint8_t i = 0; i < openEntry.bookmarkCount; i++) {
       if (openEntry.bookmarks[i] == currentLine) return true;
@@ -42,19 +61,113 @@ namespace {
     return (int)pct;
   }
 
+  // Fetches only the rows that will actually be drawn instead of scanning
+  // the whole catalog: at most MENU_VISIBLE_ROWS calls to Storage::getEntry
+  // regardless of library size.
   void redrawLibrary() {
-    std::vector<String> titles;
-    std::vector<int> progress;
-    titles.push_back(String("* Bookmarks"));
-    progress.push_back(-1);
     int n = Storage::bookCount();
-    for (int i = 0; i < n; i++) {
-      CatalogEntry e;
-      if (!Storage::getEntry(i, e)) continue;
-      titles.push_back(e.title);
-      progress.push_back(progressPercent(e));
+    int totalRows = n + 1; // + the "* Bookmarks" pseudo-row
+    int windowStart = 0;
+    if (librarySelection >= MENU_VISIBLE_ROWS) windowStart = librarySelection - MENU_VISIBLE_ROWS + 1;
+    int maxStart = totalRows - MENU_VISIBLE_ROWS;
+    if (maxStart < 0) maxStart = 0;
+    if (windowStart > maxStart) windowStart = maxStart;
+
+    windowLabels.clear();
+    windowProgress.clear();
+    for (int row = 0; row < MENU_VISIBLE_ROWS; row++) {
+      int idx = windowStart + row;
+      if (idx >= totalRows) break;
+      if (idx == 0) {
+        windowLabels.push_back(String("* Bookmarks"));
+        windowProgress.push_back(-1);
+      } else {
+        CatalogEntry e;
+        if (Storage::getEntry(idx - 1, e)) {
+          windowLabels.push_back(e.title);
+          windowProgress.push_back(progressPercent(e));
+        } else {
+          windowLabels.push_back(String("?"));
+          windowProgress.push_back(-1);
+        }
+      }
     }
-    Display::showLibrary(titles, progress, librarySelection, sdError);
+    windowHighlightRow = librarySelection - windowStart;
+    resetMarquee();
+    Display::showLibrary(windowLabels, windowProgress, windowHighlightRow, marqueeOffsetPx, sdError);
+  }
+
+  void redrawBookmarks() {
+    int totalRows = (int)bookmarkRefs.size() + 1; // + "< Back"
+    int windowStart = 0;
+    if (bookmarkSelection >= MENU_VISIBLE_ROWS) windowStart = bookmarkSelection - MENU_VISIBLE_ROWS + 1;
+    int maxStart = totalRows - MENU_VISIBLE_ROWS;
+    if (maxStart < 0) maxStart = 0;
+    if (windowStart > maxStart) windowStart = maxStart;
+
+    windowLabels.clear();
+    windowProgress.clear();
+    for (int row = 0; row < MENU_VISIBLE_ROWS; row++) {
+      int idx = windowStart + row;
+      if (idx >= totalRows) break;
+      windowLabels.push_back(idx == 0 ? String("< Back") : bookmarkRefs[idx - 1].label);
+    }
+    windowHighlightRow = bookmarkSelection - windowStart;
+    resetMarquee();
+    Display::showBookmarksList(windowLabels, windowHighlightRow, marqueeOffsetPx);
+  }
+
+  // Pure-RAM redraw used by the marquee ticker: re-renders the cached
+  // window with the current scroll offset, no SD access at all.
+  void redrawWindowFromCache() {
+    if (state == State::Library) {
+      Display::showLibrary(windowLabels, windowProgress, windowHighlightRow, marqueeOffsetPx, sdError);
+    } else if (state == State::Bookmarks) {
+      Display::showBookmarksList(windowLabels, windowHighlightRow, marqueeOffsetPx);
+    }
+  }
+
+  void stepMarquee() {
+    if (state != State::Library && state != State::Bookmarks) return;
+    if (windowHighlightRow < 0 || windowHighlightRow >= (int)windowLabels.size()) return;
+
+    int maxChars = CHARS_PER_LINE;
+    if (state == State::Library && windowHighlightRow < (int)windowProgress.size() && windowProgress[windowHighlightRow] >= 0) {
+      String prog = String(windowProgress[windowHighlightRow]) + "%";
+      maxChars -= (int)prog.length() + 1;
+    }
+    const String &title = windowLabels[windowHighlightRow];
+    if ((int)title.length() <= maxChars) return; // fits; nothing to animate
+
+    unsigned long now = millis();
+    int maxOffsetPx = ((int)title.length() - maxChars) * CHAR_PX;
+
+    switch (marqueePhase) {
+      case MarqueePhase::PauseStart:
+        if (now - marqueePhaseStartMs >= MARQUEE_PAUSE_MS) {
+          marqueePhase = MarqueePhase::Scrolling;
+          marqueePhaseStartMs = now;
+        }
+        return;
+      case MarqueePhase::Scrolling:
+        if (now - marqueeLastStepMs < MARQUEE_STEP_MS) return;
+        marqueeLastStepMs = now;
+        marqueeOffsetPx++;
+        if (marqueeOffsetPx >= maxOffsetPx) {
+          marqueeOffsetPx = maxOffsetPx;
+          marqueePhase = MarqueePhase::PauseEnd;
+          marqueePhaseStartMs = now;
+        }
+        break;
+      case MarqueePhase::PauseEnd:
+        if (now - marqueePhaseStartMs >= MARQUEE_PAUSE_MS) {
+          marqueeOffsetPx = 0;
+          marqueePhase = MarqueePhase::PauseStart;
+          marqueePhaseStartMs = now;
+        }
+        return;
+    }
+    redrawWindowFromCache();
   }
 
   void drawReadingPage() {
@@ -108,17 +221,6 @@ namespace {
       }
     }
   }
-
-  void redrawBookmarks() {
-    if (bookmarkRefs.empty()) {
-      Display::showMessage("No bookmarks yet", "Hold select to add");
-      return;
-    }
-    std::vector<String> labels;
-    labels.push_back(String("< Back"));
-    for (auto &r : bookmarkRefs) labels.push_back(r.label);
-    Display::showBookmarksList(labels, bookmarkSelection);
-  }
 }
 
 void App::begin() {
@@ -142,6 +244,8 @@ void App::loop() {
     toastUntilMs = 0;
     if (state == State::Reading) drawReadingPage();
   }
+
+  stepMarquee(); // pure-RAM; no-op unless the highlighted title overflows and it's time to step
 
   if (ev == ButtonEvent::None) return;
 
