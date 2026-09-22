@@ -7,6 +7,9 @@ void setup() {
 }
 
 void loop() {
-  if (Transfer::poll()) return; // a host-driven file transfer consumed this tick
+  if (Transfer::poll()) {
+    App::onFilesChanged(); // pick up any books the transfer just added/removed
+    return;
+  }
   App::loop();
 }

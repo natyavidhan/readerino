@@ -27,14 +27,29 @@ namespace {
     return false;
   }
 
-  void refreshMenu() {
+  // Redraws the menu from the already-cached book list. Cheap: touches only
+  // the display, never the SD card. Use this for anything that happens on
+  // every button press (navigation, returning from reading).
+  void redrawMenu() {
+    std::vector<String> names;
+    for (auto &b : books) names.push_back(b.name);
+    Display::showMenu(names, menuSelection, sdError);
+  }
+
+  // Re-scans the SD card's directory and redraws. This is comparatively
+  // expensive (a full directory walk over every file on the card), so it
+  // must only run when the file list can actually have changed: at boot,
+  // when retrying after an SD error, and after a host file transfer.
+  void rescanBooks() {
     Storage::listBooks(books);
     if (menuSelection >= (int)books.size()) {
       menuSelection = books.empty() ? 0 : (int)books.size() - 1;
     }
-    std::vector<String> names;
-    for (auto &b : books) names.push_back(b.name);
-    Display::showMenu(names, menuSelection, sdError);
+  }
+
+  void refreshMenu() {
+    rescanBooks();
+    redrawMenu();
   }
 
   void drawReadingPage() {
@@ -67,7 +82,7 @@ namespace {
     if (save) Storage::savePosition(reader.path(), currentLine);
     reader.close();
     state = State::Menu;
-    refreshMenu();
+    redrawMenu(); // the SD file list can't have changed just from reading
   }
 }
 
@@ -76,6 +91,11 @@ void App::begin() {
   Display::begin();
   sdError = !Storage::begin();
   refreshMenu();
+}
+
+void App::onFilesChanged() {
+  rescanBooks();
+  if (state == State::Menu) redrawMenu();
 }
 
 void App::loop() {
@@ -99,10 +119,10 @@ void App::loop() {
       }
       if (ev == ButtonEvent::UpPressed) {
         menuSelection = (menuSelection - 1 + (int)books.size()) % (int)books.size();
-        refreshMenu();
+        redrawMenu();
       } else if (ev == ButtonEvent::DownPressed) {
         menuSelection = (menuSelection + 1) % (int)books.size();
-        refreshMenu();
+        redrawMenu();
       } else if (ev == ButtonEvent::SelectShort || ev == ButtonEvent::SelectLong) {
         openSelectedBook();
       }

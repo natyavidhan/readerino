@@ -115,12 +115,16 @@ String Reader::readRange(uint32_t startOffset, uint32_t endOffset) {
   if (!_file || endOffset <= startOffset) return String("");
   uint32_t len = endOffset - startOffset;
   if (len > 200) len = 200; // safety cap; a wrapped line should never be this long
+
+  static uint8_t buf[200];
   _file.seek(startOffset);
+  int n = _file.read(buf, len); // one bulk read instead of `len` single-byte reads
+  if (n < 0) n = 0;
+
   String s;
-  s.reserve(len);
-  for (uint32_t i = 0; i < len; i++) {
-    if (!_file.available()) break;
-    char c = _file.read();
+  s.reserve(n);
+  for (int i = 0; i < n; i++) {
+    char c = (char)buf[i];
     if (c == '\r' || c == '\n') continue;
     s += c;
   }

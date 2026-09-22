@@ -5,7 +5,8 @@
 
 namespace {
   Adafruit_SH1106G oled(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
-  const int MENU_VISIBLE_ROWS = 7; // 7 rows * 8px = 56px, leaves a slim bottom margin
+  const int MENU_ROW_HEIGHT = 10; // 8px glyph + 1px top/bottom padding
+  const int MENU_VISIBLE_ROWS = OLED_HEIGHT / MENU_ROW_HEIGHT;
 }
 
 bool Display::begin() {
@@ -50,9 +51,9 @@ void Display::showMenu(const std::vector<String> &names, int selectedIndex, bool
   for (int row = 0; row < MENU_VISIBLE_ROWS; row++) {
     int idx = windowStart + row;
     if (idx >= total) break;
-    int y = row * 8;
+    int y = row * MENU_ROW_HEIGHT;
     if (idx == selectedIndex) {
-      oled.fillRect(0, y, OLED_WIDTH, 8, SH110X_WHITE);
+      oled.fillRect(0, y, OLED_WIDTH, MENU_ROW_HEIGHT, SH110X_WHITE);
       oled.setTextColor(SH110X_BLACK);
     } else {
       oled.setTextColor(SH110X_WHITE);
@@ -60,7 +61,7 @@ void Display::showMenu(const std::vector<String> &names, int selectedIndex, bool
     String label = names[idx];
     if (label.startsWith("/")) label = label.substring(1);
     if ((int)label.length() > CHARS_PER_LINE) label = label.substring(0, CHARS_PER_LINE);
-    oled.setCursor(1, y);
+    oled.setCursor(2, y + 1); // +1 top padding so the glyph isn't flush against the row edge
     oled.print(label);
   }
   oled.display();
@@ -98,8 +99,15 @@ void Display::showConfirmExit() {
   oled.setTextColor(SH110X_WHITE);
   oled.setCursor(x + 4, y + 6);
   oled.print("Back to menu?");
-  oled.setCursor(x + 4, y + 18);
-  oled.print("[3]Yes   [1]No");
+
+  // "No" (1st/up button, cancel) on the left, "Yes" (3rd/down button,
+  // confirm) on the right, matching the physical left-to-right button order.
+  const int charW = 6; // default font cell width at textSize 1
+  int rowY = y + 18;
+  oled.setCursor(x + 8, rowY);
+  oled.print("No");
+  oled.setCursor(x + w - 8 - 3 * charW, rowY);
+  oled.print("Yes");
   oled.display();
 }
 
