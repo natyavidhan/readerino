@@ -1,3 +1,5 @@
 essays/
+library/
 *.txt
 !firmware/**/*.txt
+__pycache__/

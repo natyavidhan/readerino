@@ -22,6 +22,16 @@
 //   host:   DELETE <filename>
 //   device: OK                          (or ERR <reason>)
 //
+//   host:   GET <filename>
+//   device: SIZE <n>                    (or ERR <reason>)
+//   device: <n> raw bytes
+//
+//   host:   SETPOS <catalogIndex> <line>
+//   device: OK
+//
+//   host:   ADDBM <catalogIndex> <line>
+//   device: OK
+//
 //   host:   BYE
 //   device: BYE
 namespace Transfer {

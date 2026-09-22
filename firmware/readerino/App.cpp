@@ -3,86 +3,121 @@
 #include "Buttons.h"
 #include "Display.h"
 #include "Storage.h"
-#include "Reader.h"
+#include "Book.h"
 #include <vector>
 #include <Arduino.h>
 
 namespace {
-  enum class State { Menu, Reading, ConfirmExit };
+  enum class State { Library, Bookmarks, Reading, ConfirmExit };
 
-  State state = State::Menu;
-  std::vector<BookInfo> books;
-  int menuSelection = 0;
+  State state = State::Library;
+  int librarySelection = 0; // 0 = "* Bookmarks" pseudo-row, 1..N = books (catalog index = librarySelection-1)
   bool sdError = false;
 
-  Reader reader;
-  int currentLine = 0;        // top line index of the current reading page (always page-aligned)
-  std::vector<int> bookmarks; // cached bookmarks for the currently open book
+  Book book;
+  int openBookIndex = -1;      // catalog index of the currently open book, -1 if none
+  uint32_t currentLine = 0;    // top line index of the current reading page (always page-aligned)
+  CatalogEntry openEntry;      // cached catalog entry for the open book (title/bookmarks)
   unsigned long toastUntilMs = 0;
 
+  struct BookmarkRef {
+    int bookIndex;
+    uint32_t line;
+    String label;
+  };
+  std::vector<BookmarkRef> bookmarkRefs; // flat list built fresh each time Bookmarks is entered
+  int bookmarkSelection = 0;
+
   bool isBookmarkedHere() {
-    for (int b : bookmarks) {
-      if (b == currentLine) return true;
+    for (uint8_t i = 0; i < openEntry.bookmarkCount; i++) {
+      if (openEntry.bookmarks[i] == currentLine) return true;
     }
     return false;
   }
 
-  // Redraws the menu from the already-cached book list. Cheap: touches only
-  // the display, never the SD card. Use this for anything that happens on
-  // every button press (navigation, returning from reading).
-  void redrawMenu() {
-    std::vector<String> names;
-    for (auto &b : books) names.push_back(b.name);
-    Display::showMenu(names, menuSelection, sdError);
+  int progressPercent(const CatalogEntry &e) {
+    if (e.totalLines == 0) return 0;
+    long pct = ((long)e.position * 100) / (long)e.totalLines;
+    if (pct > 100) pct = 100;
+    return (int)pct;
   }
 
-  // Re-scans the SD card's directory and redraws. This is comparatively
-  // expensive (a full directory walk over every file on the card), so it
-  // must only run when the file list can actually have changed: at boot,
-  // when retrying after an SD error, and after a host file transfer.
-  void rescanBooks() {
-    Storage::listBooks(books);
-    if (menuSelection >= (int)books.size()) {
-      menuSelection = books.empty() ? 0 : (int)books.size() - 1;
+  void redrawLibrary() {
+    std::vector<String> titles;
+    std::vector<int> progress;
+    titles.push_back(String("* Bookmarks"));
+    progress.push_back(-1);
+    int n = Storage::bookCount();
+    for (int i = 0; i < n; i++) {
+      CatalogEntry e;
+      if (!Storage::getEntry(i, e)) continue;
+      titles.push_back(e.title);
+      progress.push_back(progressPercent(e));
     }
-  }
-
-  void refreshMenu() {
-    rescanBooks();
-    redrawMenu();
+    Display::showLibrary(titles, progress, librarySelection, sdError);
   }
 
   void drawReadingPage() {
     std::vector<String> lines;
-    reader.renderPage(currentLine, lines);
+    book.renderPage(currentLine, lines);
     int page = currentLine / LINES_PER_PAGE;
-    Display::showReadingPage(lines, page, reader.pageCount(), isBookmarkedHere());
+    Display::showReadingPage(lines, page, book.pageCount(), isBookmarkedHere());
   }
 
-  void openSelectedBook() {
-    if (books.empty()) return;
-    String path = books[menuSelection].name;
-    Display::showMessage("Loading...", path.c_str());
-    if (!reader.open(path)) {
-      Display::showMessage("Failed to open", path.c_str());
+  bool openBookAt(int catalogIndex, uint32_t startLine) {
+    CatalogEntry e;
+    if (!Storage::getEntry(catalogIndex, e)) return false;
+    Display::showMessage("Opening...", e.title.c_str());
+    if (!book.open(e.filename)) {
+      Display::showMessage("Failed to open", e.filename.c_str());
       delay(1200);
-      refreshMenu();
-      return;
+      return false;
     }
-    int saved = Storage::getSavedPosition(path);
-    int total = reader.totalLines();
-    if (saved < 0 || saved >= total) saved = 0;
-    currentLine = (saved / LINES_PER_PAGE) * LINES_PER_PAGE; // snap to a page boundary
-    bookmarks = Storage::getBookmarks(path);
+    openBookIndex = catalogIndex;
+    openEntry = e;
+    uint32_t total = book.totalLines();
+    if (startLine >= total) startLine = 0;
+    currentLine = (startLine / LINES_PER_PAGE) * LINES_PER_PAGE;
     state = State::Reading;
     drawReadingPage();
+    return true;
   }
 
-  void exitToMenu(bool save) {
-    if (save) Storage::savePosition(reader.path(), currentLine);
-    reader.close();
-    state = State::Menu;
-    redrawMenu(); // the SD file list can't have changed just from reading
+  void exitToLibrary(bool save) {
+    if (save && openBookIndex >= 0) {
+      Storage::setPosition(openBookIndex, currentLine);
+    }
+    book.close();
+    openBookIndex = -1;
+    state = State::Library;
+    redrawLibrary();
+  }
+
+  void buildBookmarkRefs() {
+    bookmarkRefs.clear();
+    int n = Storage::bookCount();
+    for (int i = 0; i < n; i++) {
+      CatalogEntry e;
+      if (!Storage::getEntry(i, e)) continue;
+      for (uint8_t b = 0; b < e.bookmarkCount; b++) {
+        BookmarkRef ref;
+        ref.bookIndex = i;
+        ref.line = e.bookmarks[b];
+        ref.label = e.title;
+        bookmarkRefs.push_back(ref);
+      }
+    }
+  }
+
+  void redrawBookmarks() {
+    if (bookmarkRefs.empty()) {
+      Display::showMessage("No bookmarks yet", "Hold select to add");
+      return;
+    }
+    std::vector<String> labels;
+    labels.push_back(String("< Back"));
+    for (auto &r : bookmarkRefs) labels.push_back(r.label);
+    Display::showBookmarksList(labels, bookmarkSelection);
   }
 }
 
@@ -90,12 +125,13 @@ void App::begin() {
   Buttons::begin();
   Display::begin();
   sdError = !Storage::begin();
-  refreshMenu();
+  redrawLibrary();
 }
 
 void App::onFilesChanged() {
-  rescanBooks();
-  if (state == State::Menu) redrawMenu();
+  sdError = !Storage::rescan();
+  if (librarySelection > Storage::bookCount()) librarySelection = Storage::bookCount();
+  if (state == State::Library) redrawLibrary();
 }
 
 void App::loop() {
@@ -110,40 +146,78 @@ void App::loop() {
   if (ev == ButtonEvent::None) return;
 
   switch (state) {
-    case State::Menu: {
-      if (books.empty()) {
-        // retry the SD card / rescan on any press when nothing is available
+    case State::Library: {
+      int n = Storage::bookCount();
+      if (sdError) {
+        // retry the SD card / catalog on any press when nothing is available
         sdError = !Storage::begin();
-        refreshMenu();
+        redrawLibrary();
         break;
       }
+      int totalRows = n + 1; // + the "* Bookmarks" pseudo-row
       if (ev == ButtonEvent::UpPressed) {
-        menuSelection = (menuSelection - 1 + (int)books.size()) % (int)books.size();
-        redrawMenu();
+        librarySelection = (librarySelection - 1 + totalRows) % totalRows;
+        redrawLibrary();
       } else if (ev == ButtonEvent::DownPressed) {
-        menuSelection = (menuSelection + 1) % (int)books.size();
-        redrawMenu();
+        librarySelection = (librarySelection + 1) % totalRows;
+        redrawLibrary();
       } else if (ev == ButtonEvent::SelectShort || ev == ButtonEvent::SelectLong) {
-        openSelectedBook();
+        if (librarySelection == 0) {
+          buildBookmarkRefs();
+          bookmarkSelection = 0;
+          state = State::Bookmarks;
+          redrawBookmarks();
+        } else {
+          int catalogIndex = librarySelection - 1;
+          CatalogEntry e;
+          if (Storage::getEntry(catalogIndex, e)) {
+            openBookAt(catalogIndex, e.position);
+          }
+        }
+      }
+      break;
+    }
+
+    case State::Bookmarks: {
+      if (bookmarkRefs.empty()) {
+        // any press leaves the "no bookmarks yet" message back to the library
+        state = State::Library;
+        redrawLibrary();
+        break;
+      }
+      int totalRows = (int)bookmarkRefs.size() + 1; // + "< Back"
+      if (ev == ButtonEvent::UpPressed) {
+        bookmarkSelection = (bookmarkSelection - 1 + totalRows) % totalRows;
+        redrawBookmarks();
+      } else if (ev == ButtonEvent::DownPressed) {
+        bookmarkSelection = (bookmarkSelection + 1) % totalRows;
+        redrawBookmarks();
+      } else if (ev == ButtonEvent::SelectShort || ev == ButtonEvent::SelectLong) {
+        if (bookmarkSelection == 0) {
+          state = State::Library;
+          redrawLibrary();
+        } else {
+          BookmarkRef ref = bookmarkRefs[bookmarkSelection - 1];
+          openBookAt(ref.bookIndex, ref.line);
+        }
       }
       break;
     }
 
     case State::Reading: {
       if (ev == ButtonEvent::DownPressed) {
-        int total = reader.totalLines();
-        int next = currentLine + LINES_PER_PAGE;
+        uint32_t total = book.totalLines();
+        uint32_t next = currentLine + LINES_PER_PAGE;
         if (next < total) {
           currentLine = next;
           drawReadingPage();
         }
       } else if (ev == ButtonEvent::UpPressed) {
-        int prev = currentLine - LINES_PER_PAGE;
-        currentLine = prev < 0 ? 0 : prev;
+        currentLine = (currentLine < (uint32_t)LINES_PER_PAGE) ? 0 : currentLine - LINES_PER_PAGE;
         drawReadingPage();
       } else if (ev == ButtonEvent::SelectLong) {
-        Storage::addBookmark(reader.path(), currentLine);
-        bookmarks = Storage::getBookmarks(reader.path());
+        Storage::addBookmark(openBookIndex, currentLine);
+        Storage::getEntry(openBookIndex, openEntry); // refresh cached bookmarks for the "*" indicator
         Display::showToast("Bookmarked!");
         toastUntilMs = millis() + 900;
       } else if (ev == ButtonEvent::SelectShort) {
@@ -155,7 +229,7 @@ void App::loop() {
 
     case State::ConfirmExit: {
       if (ev == ButtonEvent::DownPressed) {
-        exitToMenu(true);
+        exitToLibrary(true);
       } else if (ev == ButtonEvent::UpPressed) {
         state = State::Reading;
         drawReadingPage();

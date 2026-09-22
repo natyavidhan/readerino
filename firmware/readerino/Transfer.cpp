@@ -1,5 +1,6 @@
 #include "Transfer.h"
 #include "Config.h"
+#include "Storage.h"
 #include <Arduino.h>
 #include <SD.h>
 #include <vector>
@@ -68,6 +69,58 @@ namespace {
     Serial.println("OK");
   }
 
+  void handleGet(const String &args) {
+    String filename = args;
+    if (!filename.startsWith("/")) filename = "/" + filename;
+    if (!SD.exists(filename)) {
+      Serial.println("ERR no such file");
+      return;
+    }
+    File f = SD.open(filename, FILE_READ);
+    if (!f) {
+      Serial.println("ERR could not open file for read");
+      return;
+    }
+    long size = f.size();
+    Serial.print("SIZE ");
+    Serial.println(size);
+
+    static uint8_t buf[TRANSFER_CHUNK_SIZE];
+    long sent = 0;
+    while (sent < size) {
+      int wanted = (int)min((long)TRANSFER_CHUNK_SIZE, size - sent);
+      int n = f.read(buf, wanted);
+      if (n <= 0) break;
+      Serial.write(buf, n);
+      sent += n;
+    }
+    f.close();
+  }
+
+  void handleSetPos(const String &args) {
+    int sp = args.indexOf(' ');
+    if (sp < 0) {
+      Serial.println("ERR bad SETPOS args");
+      return;
+    }
+    int index = args.substring(0, sp).toInt();
+    uint32_t line = (uint32_t)args.substring(sp + 1).toInt();
+    Storage::setPosition(index, line);
+    Serial.println("OK");
+  }
+
+  void handleAddBookmark(const String &args) {
+    int sp = args.indexOf(' ');
+    if (sp < 0) {
+      Serial.println("ERR bad ADDBM args");
+      return;
+    }
+    int index = args.substring(0, sp).toInt();
+    uint32_t line = (uint32_t)args.substring(sp + 1).toInt();
+    Storage::addBookmark(index, line);
+    Serial.println("OK");
+  }
+
   void handleList() {
     File root = SD.open("/");
     if (!root) {
@@ -107,6 +160,12 @@ namespace {
         handleList();
       } else if (cmd.startsWith("DELETE ")) {
         handleDelete(cmd.substring(7));
+      } else if (cmd.startsWith("GET ")) {
+        handleGet(cmd.substring(4));
+      } else if (cmd.startsWith("SETPOS ")) {
+        handleSetPos(cmd.substring(7));
+      } else if (cmd.startsWith("ADDBM ")) {
+        handleAddBookmark(cmd.substring(6));
       } else {
         Serial.println("ERR unknown command");
       }

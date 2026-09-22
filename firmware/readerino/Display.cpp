@@ -7,6 +7,52 @@ namespace {
   Adafruit_SH1106G oled(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
   const int MENU_ROW_HEIGHT = 10; // 8px glyph + 1px top/bottom padding
   const int MENU_VISIBLE_ROWS = OLED_HEIGHT / MENU_ROW_HEIGHT;
+
+  // Shared scrollable-list-with-highlight renderer used by both the
+  // library and the bookmarks screens. progressPct is nullable: pass
+  // nullptr for a plain list with no right-aligned progress column.
+  void drawList(const std::vector<String> &labels, const std::vector<int> *progressPct, int selectedIndex) {
+    oled.clearDisplay();
+    oled.setTextSize(1);
+
+    int total = (int)labels.size();
+    int windowStart = 0;
+    if (selectedIndex >= MENU_VISIBLE_ROWS) windowStart = selectedIndex - MENU_VISIBLE_ROWS + 1;
+    int maxStart = total - MENU_VISIBLE_ROWS;
+    if (maxStart < 0) maxStart = 0;
+    if (windowStart > maxStart) windowStart = maxStart;
+
+    for (int row = 0; row < MENU_VISIBLE_ROWS; row++) {
+      int idx = windowStart + row;
+      if (idx >= total) break;
+      int y = row * MENU_ROW_HEIGHT;
+      if (idx == selectedIndex) {
+        oled.fillRect(0, y, OLED_WIDTH, MENU_ROW_HEIGHT, SH110X_WHITE);
+        oled.setTextColor(SH110X_BLACK);
+      } else {
+        oled.setTextColor(SH110X_WHITE);
+      }
+
+      String progStr = "";
+      int maxChars = CHARS_PER_LINE;
+      if (progressPct && idx < (int)progressPct->size() && (*progressPct)[idx] >= 0) {
+        progStr = String((*progressPct)[idx]) + "%";
+        maxChars -= (int)progStr.length() + 1;
+      }
+
+      String label = labels[idx];
+      if ((int)label.length() > maxChars) label = label.substring(0, maxChars);
+      oled.setCursor(2, y + 1);
+      oled.print(label);
+
+      if (progStr.length() > 0) {
+        int px = OLED_WIDTH - 2 - (int)progStr.length() * 6;
+        oled.setCursor(px, y + 1);
+        oled.print(progStr);
+      }
+    }
+    oled.display();
+  }
 }
 
 bool Display::begin() {
@@ -18,53 +64,20 @@ bool Display::begin() {
   return true;
 }
 
-void Display::showMenu(const std::vector<String> &names, int selectedIndex, bool sdError) {
-  oled.clearDisplay();
-  oled.setTextSize(1);
-  oled.setTextColor(SH110X_WHITE);
-
+void Display::showLibrary(const std::vector<String> &titles, const std::vector<int> &progressPct, int selectedIndex, bool sdError) {
   if (sdError) {
-    oled.setCursor(0, 0);
-    oled.println("SD card error");
-    oled.println("Press any button");
-    oled.println("to retry");
-    oled.display();
+    showMessage("SD/catalog error", "Press any button");
     return;
   }
-  if (names.empty()) {
-    oled.setCursor(0, 0);
-    oled.println("No .txt files");
-    oled.println("found on SD card");
-    oled.display();
+  if (titles.empty()) {
+    showMessage("No books found", "Push a library from");
     return;
   }
+  drawList(titles, &progressPct, selectedIndex);
+}
 
-  int total = (int)names.size();
-  int windowStart = 0;
-  if (selectedIndex >= MENU_VISIBLE_ROWS) {
-    windowStart = selectedIndex - MENU_VISIBLE_ROWS + 1;
-  }
-  int maxStart = total - MENU_VISIBLE_ROWS;
-  if (maxStart < 0) maxStart = 0;
-  if (windowStart > maxStart) windowStart = maxStart;
-
-  for (int row = 0; row < MENU_VISIBLE_ROWS; row++) {
-    int idx = windowStart + row;
-    if (idx >= total) break;
-    int y = row * MENU_ROW_HEIGHT;
-    if (idx == selectedIndex) {
-      oled.fillRect(0, y, OLED_WIDTH, MENU_ROW_HEIGHT, SH110X_WHITE);
-      oled.setTextColor(SH110X_BLACK);
-    } else {
-      oled.setTextColor(SH110X_WHITE);
-    }
-    String label = names[idx];
-    if (label.startsWith("/")) label = label.substring(1);
-    if ((int)label.length() > CHARS_PER_LINE) label = label.substring(0, CHARS_PER_LINE);
-    oled.setCursor(2, y + 1); // +1 top padding so the glyph isn't flush against the row edge
-    oled.print(label);
-  }
-  oled.display();
+void Display::showBookmarksList(const std::vector<String> &labels, int selectedIndex) {
+  drawList(labels, nullptr, selectedIndex);
 }
 
 void Display::showReadingPage(const std::vector<String> &lines, int pageIndex, int pageCount, bool isBookmarked) {
