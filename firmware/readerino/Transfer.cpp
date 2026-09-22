@@ -54,6 +54,20 @@ namespace {
     }
   }
 
+  void handleDelete(const String &args) {
+    String filename = args;
+    if (!filename.startsWith("/")) filename = "/" + filename;
+    if (!SD.exists(filename)) {
+      Serial.println("ERR no such file");
+      return;
+    }
+    if (!SD.remove(filename)) {
+      Serial.println("ERR could not delete");
+      return;
+    }
+    Serial.println("OK");
+  }
+
   void handleList() {
     File root = SD.open("/");
     if (!root) {
@@ -91,6 +105,8 @@ namespace {
         handlePut(cmd.substring(4));
       } else if (cmd == "LIST") {
         handleList();
+      } else if (cmd.startsWith("DELETE ")) {
+        handleDelete(cmd.substring(7));
       } else {
         Serial.println("ERR unknown command");
       }

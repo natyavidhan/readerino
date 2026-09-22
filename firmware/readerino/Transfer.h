@@ -19,6 +19,9 @@
 //   device: <name> <size>                (n times)
 //   device: ENDLIST
 //
+//   host:   DELETE <filename>
+//   device: OK                          (or ERR <reason>)
+//
 //   host:   BYE
 //   device: BYE
 namespace Transfer {
