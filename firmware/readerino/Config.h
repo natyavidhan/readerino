@@ -24,3 +24,8 @@
 
 // ---- Storage ----
 #define BOOKMARKS_FILE "/bookmarks.json"
+
+// ---- Serial file transfer (host -> SD card via USB) ----
+#define TRANSFER_BAUD 460800
+#define TRANSFER_CHUNK_SIZE 512
+#define TRANSFER_TIMEOUT_MS 5000
