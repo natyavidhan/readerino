@@ -1,0 +1,5 @@
+pymupdf
+ebooklib
+beautifulsoup4
+lxml
+pyserial

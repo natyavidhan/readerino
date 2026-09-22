@@ -2,4 +2,5 @@ essays/
 library/
 *.txt
 !firmware/**/*.txt
+!packer/requirements.txt
 __pycache__/
