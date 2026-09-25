@@ -1,17 +1,86 @@
 # readerino
 
-A pocket e-reader built from an ESP32, a 1.3" OLED, an SD card, and three
-buttons. No touchscreen, no WiFi dependency, no bloat — just a small library
-you can browse and read with almost no lag.
+A pocket e-reader built from a microcontroller, a small screen, an SD card,
+and three buttons. No touchscreen, no WiFi dependency, no bloat — just a
+small library you can browse and read with almost no lag.
 
-The build has two halves:
+There are two hardware builds:
 
-- **Firmware** (`firmware/readerino/`) — runs on the ESP32. Shows a home
-  screen with your library and reading progress, a dedicated bookmarks view,
-  and a paginated reader.
+- **Arduino Nano + 1.8" color TFT** (`firmware/readerino_nano/`) — the
+  current one. Landscape 160x128 color UI on a classic ATmega328P (2KB RAM,
+  32KB flash). See [Nano build](#nano-build) below.
+- **ESP32 + 1.3" OLED** (`firmware/readerino/`) — the original. Library
+  screen with reading progress, a bookmarks view, and a paginated reader.
+
+Both read the same library format, produced by:
+
 - **Packer** (`packer/`) — a Python CLI that turns `.txt`/`.pdf`/`.epub`
   files into the binary format the device reads, and pushes them onto the
   SD card over the same USB cable used to flash the firmware.
+
+## Nano build
+
+![screens](docs/nano-screens.png)
+
+A dark library screen (colored book spines, per-book progress that turns
+amber while you're reading and green when you finish, a scrollbar, a
+`3/52` counter) and a warm-paper reader (24 columns x 10 lines, a progress
+bar, the title, the page number, and a red ribbon on bookmarked pages).
+
+### Hardware and pins
+
+| Part | Pin | Nano |
+|---|---|---|
+| 1.8" ST7735 TFT | LED | D6 |
+| | SCK | D13 |
+| | SDA | D11 |
+| | A0 (data/command) | D8 |
+| | RESET | D7 |
+| | CS | D9 |
+| SD card module (3.3V-only) | CS | D10 via divider |
+| | MOSI | A5 via divider |
+| | CLK | A4 via divider |
+| | MISO | A0, direct |
+| | 3V3 | 3V3 |
+| Buttons (to GND) | up / select / down | D3 / D4 / D5 |
+
+The SD module has no level shifter, so CS, MOSI and CLK each go through a
+5V → ~3.3V resistor divider (two equal resistors in parallel on the Nano
+side, one more of the same value to GND). The TFT gets the hardware SPI
+bus to itself; the SD card is bit-banged on A0/A4/A5 by a patched copy of
+the SD library in `firmware/local_libraries/SD` (sharing one bus between
+the two broke the card).
+
+The display driver (`Tft.cpp`) is a small hardware-SPI ST7735 driver
+written for this build instead of Adafruit_GFX: every text box is streamed
+as one address window with its background, so each pixel is sent once, and
+it leaves ~8KB of flash free for future features.
+
+### Designing screens on a PC
+
+`tools/simulator/simulate.py` renders every screen pixel for pixel from the
+firmware's own `Theme.h` (all colors and layout numbers) and `Font.h`, so
+you can tweak the design without flashing:
+
+```bash
+python3 tools/simulator/simulate.py      # -> tools/simulator/out/*.png
+```
+
+### Building, flashing, pushing books
+
+Clone Nanos with the old bootloader need `cpu=atmega328old` to upload.
+
+```bash
+cd firmware
+arduino-cli compile --fqbn arduino:avr:nano --library local_libraries/SD readerino_nano
+arduino-cli upload -p /dev/ttyUSB0 --fqbn arduino:avr:nano:cpu=atmega328old readerino_nano
+
+cd ../packer
+python3 pack.py ~/books -o ../library                  # wraps at 24 columns
+python3 push_to_sd.py ../library/*.rbk ../library/catalog.bin
+```
+
+A full 3.5MB library takes about 9 minutes to push at the Nano's 115200 baud.
 
 ## Why a custom binary format
 
@@ -40,7 +109,9 @@ open instead of reopening it constantly — took that down to well under
 100ms. Numbers like that are why this format exists instead of "just read
 the text file."
 
-## Hardware
+## ESP32 build
+
+### Hardware
 
 | Component | Interface | Notes |
 |---|---|---|
@@ -49,7 +120,7 @@ the text file."
 | SD card module | SPI | 3.3V native (no level shifter needed) |
 | 3x momentary buttons | GPIO | wired to GND, internal pull-ups |
 
-### Pinout
+#### Pinout
 
 | Signal | ESP32 pin |
 |---|---|
@@ -67,7 +138,7 @@ SD uses the ESP32's default VSPI pins, OLED uses the default I2C pins — both
 work with the stock `SD.begin()` / `Wire.begin()` calls, no custom bus setup
 needed.
 
-## Controls
+### Controls
 
 **Library / bookmarks screens**
 - Button 1 / Button 3 — move selection up / down
@@ -82,7 +153,7 @@ needed.
 A title too long to fit a row scrolls like a track name on Spotify — only
 the selected row animates, everything else just truncates.
 
-## Getting books onto the device
+### Getting books onto the device
 
 The SD card is wired to the ESP32, not to your computer, so there's no way
 to just mount it and drag files over. Instead, the firmware exposes a tiny
@@ -93,11 +164,11 @@ script push files through the same USB cable used to program the board.
 cd packer
 pip install -r requirements.txt
 
-# 1. Pack your books into the device's binary format
-python3 pack.py ~/books/*.pdf ~/books/*.epub ~/notes/*.txt -o ../library
+# 1. Pack your books into the device's binary format (21 columns for the OLED)
+python3 pack.py ~/books/*.pdf ~/books/*.epub ~/notes/*.txt -o ../library --width 21
 
 # 2. Push the packed library onto the SD card over serial
-python3 push_to_sd.py ../library/*.rbk ../library/catalog.bin -p /dev/ttyUSB0
+python3 push_to_sd.py --device esp32 ../library/*.rbk ../library/catalog.bin -p /dev/ttyUSB0
 ```
 
 Re-running the packer against files you've already packed updates them in
@@ -105,7 +176,7 @@ place without losing your reading position or bookmarks — it tracks
 source-file → book-id mappings in a local `.pack_manifest.json` so it knows
 what's already there.
 
-## Building and flashing
+### Building and flashing
 
 Built with [arduino-cli](https://arduino.github.io/arduino-cli/) against the
 `esp32:esp32` core.
@@ -122,6 +193,13 @@ Dependencies (installed via `arduino-cli lib install`): `Adafruit SH110X`,
 ## Project layout
 
 ```
+firmware/readerino_nano/  Arduino Nano sketch
+  Theme.h             every color and layout number (read by the simulator too)
+  Font.h              5x7 glyphs + icon glyphs
+  Tft.*               lean ST7735 hardware-SPI driver
+  Display.*           screens (library, reader, dialog, toast, messages)
+firmware/local_libraries/SD/  SD library patched for software SPI on A0/A4/A5
+tools/simulator/      renders the Nano screens to PNG on a PC
 firmware/readerino/   ESP32 sketch
   App.*               state machine (library / bookmarks / reading / confirm)
   Display.*           OLED rendering

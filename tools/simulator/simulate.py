@@ -9,6 +9,7 @@ way the panel receives them).
 
     python tools/simulator/simulate.py            # writes tools/simulator/out/*.png
     python tools/simulator/simulate.py --scale 6  # bigger previews
+    python tools/simulator/simulate.py --demo     # public-domain sample data
 """
 
 import argparse
@@ -337,31 +338,40 @@ def message(tft, line1, line2="", accent=None):
 # Sample data and scenes
 # ---------------------------------------------------------------------------
 
-def sample_entries():
+DEMO_TITLES = ("Pride and Prejudice", "Moby-Dick; or, The Whale", "Frankenstein", "Dracula",
+               "The Time Machine", "Alice's Adventures in Wonderland", "Walden", "The Odyssey",
+               "Great Expectations", "The Picture of Dorian Gray", "Middlemarch", "Treasure Island")
+DEMO_TEXT = (
+    "It is a truth universally acknowledged, that a single man in possession of a good fortune, "
+    "must be in want of a wife.\n\n"
+    "However little known the feelings or views of such a man may be on his first entering a "
+    "neighbourhood, this truth is so well fixed in the minds of the surrounding families, that he is "
+    "considered the rightful property of some one or other of their daughters.\n\n"
+    "\"My dear Mr. Bennet,\" said his lady to him one day, \"have you heard that Netherfield Park is "
+    "let at last?\"\n\nMr. Bennet replied that he had not.\n\n"
+    "\"But it is,\" returned she; \"for Mrs. Long has just been here, and she told me all about it.\"\n\n"
+    "Mr. Bennet made no answer.\n\n"
+    "\"Do you not want to know who has taken it?\" cried his wife impatiently.\n\n"
+    "\"You want to tell me, and I have no objection to hearing it.\"\n\n"
+    "This was invitation enough.\n\n") * 6
+
+
+def sample_entries(demo):
     from formats import read_catalog
-    cat = read_catalog(ROOT / "library" / "catalog.bin")
-    if not cat:
-        cat = [{"title": t, "total_lines": 100, "position": 0} for t in
-               ("How to Do Great Work", "The Bus Ticket Theory of Genius", "Superlinear Returns",
-                "Do Things that Don't Scale", "Maker's Schedule, Manager's Schedule",
-                "How to Start a Startup", "Why Nerds are Unpopular", "Hackers and Painters",
-                "The Age of the Essay", "Lies We Tell Kids")]
+    cat = [] if demo else read_catalog(ROOT / "library" / "catalog.bin")
+    titles = [r["title"] for r in cat] or list(DEMO_TITLES)
     demo_pct = {1: 34, 3: 100, 4: 72, 7: 8}
-    return [{"title": r["title"], "pct": demo_pct.get(i, 0)} for i, r in enumerate(cat)]
+    return [{"title": t, "pct": demo_pct.get(i, 0)} for i, t in enumerate(titles)]
 
 
-def sample_book():
+def sample_book(demo):
+    """The first essay in essays/ if there is one (your own library), else a
+    public-domain excerpt -- use --demo for anything you'll publish."""
     from textutil import wrap_text
-    path = ROOT / "essays" / "greatwork.txt"
-    if not path.exists():
-        cands = sorted((ROOT / "essays").glob("*.txt"))
-        path = cands[0] if cands else None
-    if path is None:
-        text = ("If you collected lists of techniques for doing great work in a lot of "
-                "different fields, what would the intersection look like? ") * 40
-        return "How to Do Great Work", wrap_text(text, T["RD_COLS"])
-    raw = path.read_text(errors="ignore")
-    title, _, body = raw.partition("\n")
+    cands = [] if demo else sorted((ROOT / "essays").glob("*.txt"))
+    if not cands:
+        return DEMO_TITLES[0], wrap_text(DEMO_TEXT, T["RD_COLS"])
+    title, _, body = cands[0].read_text(errors="ignore").partition("\n")
     return title.strip(), wrap_text(body, T["RD_COLS"])
 
 
@@ -369,13 +379,15 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scale", type=int, default=4)
     ap.add_argument("--out", default=str(Path(__file__).parent / "out"))
+    ap.add_argument("--demo", action="store_true",
+                    help="public-domain sample titles and text instead of your library/ and essays/")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    entries = sample_entries()
-    title, lines = sample_book()
-    first = T["RD_LINES"]
+    entries = sample_entries(args.demo)
+    title, lines = sample_book(args.demo)
+    first = 0 if args.demo else T["RD_LINES"]
 
     scenes = {}
 
