@@ -37,14 +37,16 @@ screens use the same shapes, e.g. the exit dialog reads "▲ No" / "■ Yes".
 - **Reading** — down/up to turn pages; hold center to bookmark the page, or
   to remove the bookmark if it already has one; tap center for "Back to
   library?" (down = yes and save your place, up = keep reading)
-- **Video** — plays from where you left off; down/up skip 5 seconds
+- **Video** — starts from the beginning (a bookmark opens at its time);
+  down/up skip 5 seconds
   forward/back; hold center to bookmark the current second (or remove that
   bookmark); tap center to pause and get "Back to library?"
 - **Image** — hold center to bookmark it, tap center for "Back to library?"
 - **Settings** — empty for now, center goes back
 
 Videos show a ▶ and images a picture icon in place of the color stripe in
-the library; bookmarks on a video list the time (`1:23`) instead of a page.
+the library, with a video's length (`3:39`) where books show progress;
+bookmarks on a video list the time (`1:23`) instead of a page.
 
 ## Hardware and pins
 

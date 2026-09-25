@@ -312,6 +312,8 @@ def library_rows(entries):
         kind = e.get("kind", KIND_BOOK)
         if kind == KIND_IMAGE:
             rows.append((e["title"], "img", T["COL_MUTED"], i, kind))
+        elif kind == KIND_VIDEO:  # videos show their length (they always start from the top)
+            rows.append((e["title"], "%d:%02d" % divmod(e.get("seconds", 219), 60), T["COL_MUTED"], i, kind))
         else:
             rows.append((e["title"], "%d%%" % e["pct"], progress_color(e["pct"]), i, kind))
     return rows

@@ -17,7 +17,8 @@
 //   Settings   placeholder, select (short or held) -> Home
 //   Reading    down/up turn pages, hold select toggles a bookmark on this
 //              page, short select asks "Back to library?"
-//   Playing    video: up/down skip back/forward VIDEO_SKIP_S seconds, hold
+//   Playing    video, from the start (or a bookmark's second); up/down skip
+//              back/forward VIDEO_SKIP_S seconds, hold
 //              select toggles a bookmark on this second, short select
 //              pauses and asks "Back to library?"
 //   Viewing    image: hold select toggles a bookmark, short select asks
@@ -123,10 +124,9 @@ namespace {
 
   uint8_t progressPercent(const CatalogEntry &e) {
     if (e.totalLines == 0) return 0;
-    // position is the start of the last page (or second of video) reached,
-    // so the very end never reaches totalLines by itself.
-    uint32_t lastChunk = e.kind == KIND_VIDEO ? e.fps : RD_LINES;
-    if (e.position > 0 && e.position + lastChunk >= e.totalLines) return 100;
+    // position is the top line of the last page read, so the last page of
+    // a book never reaches totalLines by itself.
+    if (e.position > 0 && e.position + RD_LINES >= e.totalLines) return 100;
     long pct = ((long)e.position * 100L) / (long)e.totalLines;
     return pct > 99 ? 99 : (uint8_t)pct;
   }
@@ -139,6 +139,14 @@ namespace {
 
   const __FlashStringHelper *hintMenu() { return F("Hold " GLYPH_BUTTON " for menu"); }
 
+  // "m:ss" for a frame index of a video at fps.
+  void formatTime(char *out, uint32_t frame, uint8_t fps) {
+    uint32_t sec = fps ? frame / fps : 0;
+    itoa(sec / 60, out, 10);
+    strcat(out, sec % 60 < 10 ? ":0" : ":");
+    itoa(sec % 60, out + strlen(out), 10);
+  }
+
   void drawLibraryRow(uint8_t slot, int idx, bool sel) {
     CatalogEntry e;
     if (idx >= Storage::bookCount() || !Storage::getEntry(idx, e)) {
@@ -147,6 +155,14 @@ namespace {
     }
     if (e.kind == KIND_IMAGE) {
       Display::listRow(slot, e.title, "img", COL_MUTED, idx, e.kind, sel);
+      return;
+    }
+    if (e.kind == KIND_VIDEO) {
+      // videos always start from the beginning, so show their length
+      // rather than a progress percentage
+      char len[9];
+      formatTime(len, e.totalLines, e.fps);
+      Display::listRow(slot, e.title, len, COL_MUTED, idx, e.kind, sel);
       return;
     }
     uint8_t pct = progressPercent(e);
@@ -165,11 +181,7 @@ namespace {
     const uint32_t pos = bookmarkRefs[idx].line;
     char right[9];
     if (e.kind == KIND_VIDEO) {
-      // time in the video, m:ss
-      uint32_t sec = e.fps ? pos / e.fps : 0;
-      itoa(sec / 60, right, 10);
-      strcat(right, sec % 60 < 10 ? ":0" : ":");
-      itoa(sec % 60, right + strlen(right), 10);
+      formatTime(right, pos, e.fps); // time in the video
     } else if (e.kind == KIND_IMAGE) {
       strcpy(right, "img");
     } else {
@@ -353,7 +365,9 @@ namespace {
   bool openItem(int catalogIndex, uint32_t pos) {
     if (!Storage::getEntry(catalogIndex, openEntry)) return false;
     CatalogEntry &e = openEntry;
-    if (pos == RESUME) pos = e.position;
+    // Books resume where they were left; videos opened from the library
+    // always start from the beginning (bookmarks still jump to their time).
+    if (pos == RESUME) pos = e.kind == KIND_VIDEO ? 0 : e.position;
     Display::message(F("Opening" GLYPH_ELLIPSIS), e.title);
     invalidateLists();
     readerReturn = state;
@@ -396,8 +410,7 @@ namespace {
   // back to the list it was opened from.
   void closeItem() {
     if (openBookIndex >= 0) {
-      if (openEntry.kind == KIND_VIDEO) Storage::setPosition(openBookIndex, currentKeyFrame());
-      else if (openEntry.kind == KIND_BOOK) Storage::setPosition(openBookIndex, currentLine);
+      if (openEntry.kind == KIND_BOOK) Storage::setPosition(openBookIndex, currentLine);
     }
     book.close();
     Media::close();
