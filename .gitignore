@@ -4,3 +4,4 @@ library/
 !firmware/**/*.txt
 !packer/requirements.txt
 __pycache__/
+tools/simulator/out/

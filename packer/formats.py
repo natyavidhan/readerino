@@ -50,7 +50,7 @@ MAX_BOOKMARKS = 8
 RECORD_FMT = f"<32s48s32sIIB3x{MAX_BOOKMARKS}I"
 RECORD_SIZE = struct.calcsize(RECORD_FMT)
 
-WRAP_WIDTH = 21  # must match firmware's Config.h CHARS_PER_LINE
+WRAP_WIDTH = 24  # Nano TFT reader width (Theme.h RD_COLS); use --width 21 for the ESP32/OLED build
 
 
 def write_rbk(path, title: str, author: str, lines: list[str], width: int = WRAP_WIDTH):

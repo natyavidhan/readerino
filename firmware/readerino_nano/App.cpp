@@ -4,6 +4,7 @@
 #include "Display.h"
 #include "Storage.h"
 #include "Book.h"
+#include "Font.h"
 #include <Arduino.h>
 #include <string.h>
 #include <stdlib.h>
@@ -21,14 +22,11 @@ namespace {
   CatalogEntry openEntry;   // the open book's catalog record, kept for its bookmark list
   unsigned long toastUntilMs = 0;
 
-  char lineBuf[CHARS_PER_LINE + 1];
+  char lineBuf[RD_COLS + 1];
 
   // Tracks what's actually on screen so navigation can redraw only the
-  // rows that changed instead of the whole list. Software SPI to the TFT
-  // is slow enough (no longer sharing the hardware SPI bus with the SD
-  // card, see Config.h) that repainting all 20 rows on every keypress was
-  // the dominant cost, on top of a redundant full-screen fillScreen() that
-  // happened before those per-row draws anyway.
+  // rows that changed instead of the whole list. -1 = the screen shows
+  // something else (reader, a message), so the next draw is a full one.
   int lastWindowStart = -1;
   int lastSelectedRow = -1;
 
@@ -46,64 +44,54 @@ namespace {
     return (int8_t)pct;
   }
 
-  void drawLibraryRow(uint8_t row, int idx, int n, bool sel) {
-    if (idx >= n) {
-      Display::textRow(row, "", false);
-      return;
-    }
+  void drawLibraryRow(uint8_t slot, int idx, int n, bool sel) {
     CatalogEntry e;
-    if (!Storage::getEntry(idx, e)) {
-      Display::textRow(row, "?", sel);
+    if (idx >= n || !Storage::getEntry(idx, e)) {
+      Display::libraryEmptyRow(slot);
       return;
     }
-    Display::textRow(row, e.title, sel);
-    char progStr[5];
-    itoa(progressPercent(e), progStr, 10);
-    strcat(progStr, "%");
-    Display::textRowRight(row, progStr, sel);
+    Display::libraryRow(slot, e.title, progressPercent(e), idx, sel);
   }
 
   void redrawLibrary() {
     if (sdError) {
-      Display::showMessage("SD/catalog error", "Press any button");
-      lastWindowStart = -1; // screen no longer shows the library; force a full redraw next time
+      Display::message(F("SD card error"), F("Press any button"), COL_ERROR);
+      lastWindowStart = -1;
       return;
     }
     int n = Storage::bookCount();
     if (n == 0) {
-      Display::showMessage("No books found", "Push a library from");
+      Display::message(F("No books yet"), F("Use push_to_sd.py"));
       lastWindowStart = -1;
       return;
     }
 
     int windowStart = 0;
-    if (librarySelection >= VISIBLE_ROWS) windowStart = librarySelection - VISIBLE_ROWS + 1;
-    int maxStart = n - VISIBLE_ROWS;
+    if (librarySelection >= LIB_ROWS) windowStart = librarySelection - LIB_ROWS + 1;
+    int maxStart = n - LIB_ROWS;
     if (maxStart < 0) maxStart = 0;
     if (windowStart > maxStart) windowStart = maxStart;
     int selectedRow = librarySelection - windowStart;
 
-    if (windowStart == lastWindowStart && lastSelectedRow >= 0) {
-      // Same window as last draw: only the old and new highlighted rows
-      // actually changed on screen.
+    if (windowStart == lastWindowStart) {
+      // Same window: only the old and new highlighted rows changed, plus
+      // the "3/52" counter.
       if (lastSelectedRow != selectedRow) {
-        Display::beginBatch();
         drawLibraryRow(lastSelectedRow, windowStart + lastSelectedRow, n, false);
         drawLibraryRow(selectedRow, windowStart + selectedRow, n, true);
-        Display::endBatch();
+        Display::libraryHeader(librarySelection, n, false);
       }
     } else {
-      // Window scrolled, or the screen was showing something else before
-      // (reading page, a message) -- full redraw. Still no upfront
-      // fillScreen(): every row's own fillRect already covers it. Batched
-      // into one SPI transaction instead of ~40 separate ones (fillRect +
-      // print, per row).
-      Display::beginBatch();
-      for (uint8_t row = 0; row < VISIBLE_ROWS; row++) {
+      // Scrolled, or coming from another screen: every row, the scrollbar,
+      // and (only when coming from elsewhere) the static header and footer.
+      bool full = lastWindowStart < 0;
+      Display::libraryHeader(librarySelection, n, full);
+      for (uint8_t row = 0; row < LIB_ROWS; row++) {
         int idx = windowStart + row;
         drawLibraryRow(row, idx, n, idx == librarySelection);
       }
-      Display::endBatch();
+      Display::libraryScrollbar(windowStart, n);
+      if (full) Display::libraryFooter();
     }
 
     lastWindowStart = windowStart;
@@ -111,37 +99,30 @@ namespace {
   }
 
   void drawReadingPage() {
-    Display::beginBatch();
-    for (uint8_t row = 0; row < LINES_PER_PAGE; row++) {
-      book.getLine(currentLine + row, lineBuf, CHARS_PER_LINE);
-      Display::textRow(row, lineBuf, false);
+    Display::readerTop();
+    for (uint8_t row = 0; row < RD_LINES; row++) {
+      book.getLine(currentLine + row, lineBuf, RD_COLS);
+      Display::readerLine(row, lineBuf);
     }
-    int page = currentLine / LINES_PER_PAGE;
-    char status[16];
-    itoa(page + 1, status, 10);
-    strcat(status, "/");
-    char pageCountStr[6];
-    itoa(book.pageCount(), pageCountStr, 10);
-    strcat(status, pageCountStr);
-    if (isBookmarkedHere()) strcat(status, "  *");
-    Display::textRow(LINES_PER_PAGE, status, false);
-    Display::endBatch();
+    Display::readerStatus(openEntry.title, currentLine / RD_LINES + 1, book.pageCount(), isBookmarkedHere());
   }
 
   bool openBookAt(int catalogIndex, uint32_t startLine) {
     CatalogEntry e;
     if (!Storage::getEntry(catalogIndex, e)) return false;
-    Display::showMessage("Opening...", e.title);
+    Display::message(F("Opening" GLYPH_ELLIPSIS), e.title);
     if (!book.open(e.filename)) {
-      Display::showMessage("Failed to open", e.filename);
+      Display::message(F("Could not open"), e.filename, COL_ERROR);
       delay(1200);
+      lastWindowStart = -1; // the message replaced the whole library screen
+      redrawLibrary();
       return false;
     }
     openBookIndex = catalogIndex;
     openEntry = e;
     uint32_t total = book.totalLines();
     if (startLine >= total) startLine = 0;
-    currentLine = (startLine / LINES_PER_PAGE) * LINES_PER_PAGE;
+    currentLine = (startLine / RD_LINES) * RD_LINES;
     state = State::Reading;
     drawReadingPage();
     return true;
@@ -211,22 +192,22 @@ void App::loop() {
     case State::Reading: {
       if (ev == ButtonEvent::DownPressed) {
         uint32_t total = book.totalLines();
-        uint32_t next = currentLine + LINES_PER_PAGE;
+        uint32_t next = currentLine + RD_LINES;
         if (next < total) {
           currentLine = next;
           drawReadingPage();
         }
       } else if (ev == ButtonEvent::UpPressed) {
-        currentLine = (currentLine < (uint32_t)LINES_PER_PAGE) ? 0 : currentLine - LINES_PER_PAGE;
+        currentLine = (currentLine < (uint32_t)RD_LINES) ? 0 : currentLine - RD_LINES;
         drawReadingPage();
       } else if (ev == ButtonEvent::SelectLong) {
         Storage::addBookmark(openBookIndex, currentLine);
         Storage::getEntry(openBookIndex, openEntry); // refresh cached bookmarks for the "*" indicator
-        Display::showToast("Bookmarked!");
+        Display::toastBookmarked();
         toastUntilMs = millis() + 900;
       } else if (ev == ButtonEvent::SelectShort) {
         state = State::ConfirmExit;
-        Display::showConfirmExit();
+        Display::confirmExit();
       }
       break;
     }

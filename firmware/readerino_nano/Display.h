@@ -1,28 +1,35 @@
 #pragma once
 #include <Arduino.h>
+#include "Theme.h"
 
+// Every screen the app draws. Each function paints its whole region
+// (backgrounds included) exactly once, so nothing is cleared beforehand
+// and there's no flicker. tools/simulator/simulate.py mirrors these
+// function for function -- change both together.
 namespace Display {
-  bool begin();
-  void clear();
+  void begin();
 
-  // Wrap a batch of textRow()/textRowRight() calls in beginBatch()/endBatch()
-  // when drawing multiple rows in one pass. Every Adafruit_GFX primitive
-  // (fillRect, print, ...) normally opens and closes its own SPI
-  // transaction; on this chip's software SPI, that per-call overhead is
-  // significant when it happens ~40 times for a 20-row screen. Calls nest
-  // safely if already inside a batch.
-  void beginBatch();
-  void endBatch();
+  // Library. A full screen is header(full=true) + LIB_ROWS rows +
+  // scrollbar + footer; moving the selection within the visible window
+  // only needs the two rows that changed plus header(full=false), which
+  // repaints just the "3/52" counter.
+  void libraryHeader(int selected, int count, bool full);
+  void libraryRow(uint8_t slot, const char *title, uint8_t percent, int index, bool selected);
+  void libraryEmptyRow(uint8_t slot);
+  void libraryScrollbar(int windowStart, int count);
+  void libraryFooter();
 
-  // Draws text left-aligned on a row (0-based, ROW_H px tall), clearing
-  // the whole row first. inverted = selection highlight (filled bar).
-  void textRow(uint8_t row, const char *text, bool inverted);
+  // Reader page: top margin + RD_LINES lines + status (progress bar, title,
+  // page counter, bookmark ribbon).
+  void readerTop();
+  void readerLine(uint8_t slot, const char *text);
+  void readerStatus(const char *title, int page, int pages, bool bookmarked);
 
-  // Draws text right-aligned on an already-drawn row without disturbing
-  // the left-aligned label (masks just the region it needs).
-  void textRowRight(uint8_t row, const char *text, bool inverted);
+  // Overlays drawn on top of the reader page.
+  void confirmExit();
+  void toastBookmarked();
 
-  void showConfirmExit();
-  void showToast(const char *message);
-  void showMessage(const char *line1, const char *line2 = nullptr);
+  // Full-screen message on the dark background, e.g. "Opening..." + title.
+  void message(const __FlashStringHelper *line1, const char *line2, uint16_t accent = COL_ACCENT);
+  void message(const __FlashStringHelper *line1, const __FlashStringHelper *line2, uint16_t accent = COL_ACCENT);
 }

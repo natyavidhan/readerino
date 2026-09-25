@@ -1,4 +1,5 @@
 #pragma once
+#include "Theme.h"
 
 // ---- SD card: software SPI on A0/A4/A5 (see local_libraries/SD) ----
 // The hardware SPI bus (D11/D12/D13) now belongs exclusively to the TFT,
@@ -33,19 +34,11 @@
 #define LONG_PRESS_MS 600
 
 // ---- Display ----
-#define SCREEN_W 128
-#define SCREEN_H 160
-// Most 1.8" 128x160 ST7735 boards use the black-tab init; if colors or
-// geometry look wrong on first boot, try INITR_GREENTAB instead (Display.cpp).
-
-// ---- Reader layout ----
-// 6x8px default font. CHARS_PER_LINE matches the wrap width already baked
-// into every .rbk file by the packer — do not change without repacking.
-#define CHARS_PER_LINE 21
-#define ROW_H 8
-// One row reserved at the bottom of the reading screen for the page/bookmark status.
-#define LINES_PER_PAGE ((SCREEN_H / ROW_H) - 1)
-#define VISIBLE_ROWS (SCREEN_H / ROW_H)
+// Colors and every layout number live in Theme.h (shared with the PC
+// simulator in tools/simulator). Orientation is the ST7735 MADCTL value:
+//   0xA0 = landscape, rotated 90 degrees clockwise from the default portrait
+//   0x60 = landscape the other way round -- use this if the image is upside down
+#define TFT_MADCTL 0xA0
 
 // ---- Catalog / bookmarks ----
 // On-disk field widths (must match packer/formats.py — do not change).
@@ -54,11 +47,11 @@
 #define DISK_AUTHOR_LEN 32
 
 // RAM-side copies are kept much smaller than the disk fields: nothing on
-// this display can show more than CHARS_PER_LINE of a title anyway, and
+// this display can show more than RD_COLS of a title anyway, and
 // the packer's generated filenames ("/b0001.rbk") never approach 32 bytes.
 // This is the difference between CatalogEntry fitting in budget or not.
 #define FILENAME_LEN 16
-#define TITLE_LEN (CHARS_PER_LINE + 1)
+#define TITLE_LEN (RD_COLS + 1)
 #define MAX_BOOKMARKS 4
 
 // ---- Serial file transfer (host -> SD card via USB) ----

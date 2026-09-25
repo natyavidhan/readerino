@@ -9,7 +9,7 @@
 //
 // Fields are sized for what this build actually uses, not the full on-disk
 // widths: title is truncated to what the screen can show (nothing here can
-// display more than CHARS_PER_LINE anyway), filename to what the packer
+// display more than RD_COLS anyway), filename to what the packer
 // actually generates ("/b0001.rbk"), and author is dropped — nothing in
 // this UI displays it.
 struct CatalogEntry {

@@ -42,7 +42,7 @@ void Book::close() {
 
 int Book::pageCount() const {
   if (_lineCount == 0) return 1;
-  return (_lineCount + LINES_PER_PAGE - 1) / LINES_PER_PAGE;
+  return (_lineCount + RD_LINES - 1) / RD_LINES;
 }
 
 uint32_t Book::readOffsetEntry(uint32_t i) {

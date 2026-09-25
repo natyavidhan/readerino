@@ -1,0 +1,422 @@
+"""Renders readerino's Nano screens on a PC, pixel for pixel.
+
+Colors, layout and glyphs are parsed straight out of the firmware's
+Theme.h and Font.h, and the two drawing primitives below (fill_rect,
+text_box) behave exactly like Tft::fillRect / Tft::textBox on the device.
+The screen functions mirror Display.cpp call for call, so a screenshot here
+is what the 160x128 panel shows (colors are quantized to RGB565 the same
+way the panel receives them).
+
+    python tools/simulator/simulate.py            # writes tools/simulator/out/*.png
+    python tools/simulator/simulate.py --scale 6  # bigger previews
+"""
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+from PIL import Image, ImageDraw
+
+ROOT = Path(__file__).resolve().parents[2]
+FW = ROOT / "firmware" / "readerino_nano"
+sys.path.insert(0, str(ROOT / "packer"))
+
+
+# ---------------------------------------------------------------------------
+# Parsing the firmware headers
+# ---------------------------------------------------------------------------
+
+def rgb565(r, g, b):
+    return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+
+
+def parse_theme(path: Path) -> dict:
+    raw = {}
+    for line in path.read_text().splitlines():
+        m = re.match(r"\s*#define\s+(\w+)\s+(.+?)\s*(//.*)?$", line)
+        if m and m.group(1) != "RGB565":
+            raw[m.group(1)] = m.group(2)
+
+    values = {}
+
+    def resolve(name):
+        if name in values:
+            return values[name]
+        expr = raw[name]
+        expr = re.sub(r"\b([A-Z_][A-Z0-9_]+)\b",
+                      lambda m: str(resolve(m.group(1))) if m.group(1) in raw else m.group(1),
+                      expr)
+        values[name] = eval(expr, {"RGB565": rgb565})
+        return values[name]
+
+    for name in raw:
+        resolve(name)
+    return values
+
+
+def parse_font(path: Path):
+    text = path.read_text()
+    first = int(re.search(r"#define FONT_FIRST (0x[0-9A-F]+)", text).group(1), 16)
+    last = int(re.search(r"#define FONT_LAST (0x[0-9A-F]+)", text).group(1), 16)
+    body = text[text.index("FONT[] PROGMEM"):]
+    body = re.sub(r"//.*", "", body)
+    data = [int(v, 16) for v in re.findall(r"0x([0-9A-F]{2})", body)]
+    assert len(data) == (last - first + 1) * 5, "Font.h glyph table size mismatch"
+    return first, last, data
+
+
+T = parse_theme(FW / "Theme.h")
+FONT_FIRST, FONT_LAST, FONT = parse_font(FW / "Font.h")
+ELLIPSIS = "\x7f"
+BOOKMARK = "\x80"
+
+
+def to_rgb(c565):
+    r = (c565 >> 11) & 0x1F
+    g = (c565 >> 5) & 0x3F
+    b = c565 & 0x1F
+    return (r * 255 // 31, g * 255 // 63, b * 255 // 31)
+
+
+# ---------------------------------------------------------------------------
+# Tft: the device's two primitives
+# ---------------------------------------------------------------------------
+
+class Tft:
+    def __init__(self):
+        self.w, self.h = T["SCREEN_W"], T["SCREEN_H"]
+        self.img = Image.new("RGB", (self.w, self.h), (255, 0, 255))  # magenta = never drawn
+        self.px = self.img.load()
+
+    def fill_rect(self, x, y, w, h, color):
+        rgb = to_rgb(color)
+        for yy in range(max(y, 0), min(y + h, self.h)):
+            for xx in range(max(x, 0), min(x + w, self.w)):
+                self.px[xx, yy] = rgb
+
+    def text_box(self, x, y, w, h, tx, ty, s, fg, bg):
+        """Fills a w*h box with bg and draws s at (tx, ty) inside it, clipped
+        to the box -- the single streamed window Tft::textBox sends."""
+        fg_rgb, bg_rgb = to_rgb(fg), to_rgb(bg)
+        for r in range(h):
+            gy = r - ty
+            for c in range(w):
+                gx = c - tx
+                on = False
+                if 0 <= gy < T["GLYPH_H"] and gx >= 0:
+                    i, col = divmod(gx, T["GLYPH_W"])
+                    if i < len(s) and col < 5:
+                        code = ord(s[i])
+                        if code < FONT_FIRST or code > FONT_LAST:
+                            code = ord("?")
+                        on = (FONT[(code - FONT_FIRST) * 5 + col] >> gy) & 1
+                xx, yy = x + c, y + r
+                if 0 <= xx < self.w and 0 <= yy < self.h:
+                    self.px[xx, yy] = fg_rgb if on else bg_rgb
+
+
+# ---------------------------------------------------------------------------
+# Display: mirrors Display.cpp
+# ---------------------------------------------------------------------------
+
+def text_width(n):
+    return n * T["GLYPH_W"] - 1 if n else 0
+
+
+def truncate(s, max_chars):
+    return s if len(s) <= max_chars else s[:max_chars - 1].rstrip() + ELLIPSIS
+
+
+def cut_corner(tft, x, y, dx, dy, color):
+    """Paints the 3-pixel L at one corner of a box; (x, y) is the corner
+    pixel and dx/dy (+1/-1) point into the box."""
+    tft.fill_rect(x, y, 1, 1, color)
+    tft.fill_rect(x + dx, y, 1, 1, color)
+    tft.fill_rect(x, y + dy, 1, 1, color)
+
+
+def cut_corners(tft, x, y, w, h, outside):
+    cut_corner(tft, x, y, 1, 1, outside)
+    cut_corner(tft, x + w - 1, y, -1, 1, outside)
+    cut_corner(tft, x, y + h - 1, 1, -1, outside)
+    cut_corner(tft, x + w - 1, y + h - 1, -1, -1, outside)
+
+
+def spine_color(index):
+    return T["COL_SPINE_%d" % (index % T["SPINE_COUNT"])]
+
+
+def progress_color(pct):
+    if pct <= 0:
+        return T["COL_PROG_NEW"]
+    if pct >= 100:
+        return T["COL_PROG_DONE"]
+    return T["COL_PROG_MID"]
+
+
+def library_header(tft, selected, count, full=True):
+    right_w = 64
+    if full:
+        label = "Library"
+        tft.text_box(0, 0, T["SCREEN_W"] - right_w, T["LIB_HEADER_H"],
+                     T["LIB_PAD_X"], T["LIB_HEADER_TEXT_Y"], label, T["COL_HEADING"], T["COL_BG"])
+        tft.fill_rect(T["LIB_PAD_X"], T["LIB_UNDERLINE_Y"], text_width(len(label)),
+                      T["LIB_UNDERLINE_H"], T["COL_ACCENT"])
+        tft.fill_rect(0, T["LIB_HEADER_H"], T["SCREEN_W"], T["LIB_LIST_Y"] - T["LIB_HEADER_H"], T["COL_BG"])
+    s = "%d/%d" % (selected + 1, count) if count else ""
+    tft.text_box(T["SCREEN_W"] - right_w, 0, right_w, T["LIB_HEADER_H"],
+                 right_w - T["LIB_PAD_X"] - text_width(len(s)), T["LIB_HEADER_TEXT_Y"],
+                 s, T["COL_MUTED"], T["COL_BG"])
+
+
+def library_row(tft, slot, entry, index, selected):
+    y = T["LIB_LIST_Y"] + slot * T["LIB_ROW_H"]
+    row_h = T["LIB_ROW_H"]
+    if entry is None:
+        tft.fill_rect(0, y, T["LIB_ROW_X"] + T["LIB_ROW_W"], row_h, T["COL_BG"])
+        return
+    bg = T["COL_SEL_BG"] if selected else T["COL_BG"]
+    fg = T["COL_SEL_TEXT"] if selected else T["COL_TEXT"]
+    title_w = T["LIB_ROW_W"] - T["LIB_PCT_W"]
+
+    tft.fill_rect(0, y, T["LIB_ROW_X"], row_h, T["COL_BG"])
+    tft.text_box(T["LIB_ROW_X"], y, title_w, row_h, T["LIB_TITLE_X"] - T["LIB_ROW_X"], T["LIB_ROW_TEXT_Y"],
+                 truncate(entry["title"], T["LIB_TITLE_CHARS"]), fg, bg)
+
+    pct = entry["pct"]
+    s = "%d%%" % pct
+    tft.text_box(T["LIB_ROW_X"] + title_w, y, T["LIB_PCT_W"], row_h,
+                 T["LIB_PCT_W"] - T["LIB_PCT_PAD_R"] - text_width(len(s)), T["LIB_ROW_TEXT_Y"],
+                 s, progress_color(pct), bg)
+    tft.fill_rect(T["LIB_SPINE_X"], y + T["LIB_ROW_TEXT_Y"], T["LIB_SPINE_W"], T["GLYPH_H"] - 1,
+                  spine_color(index))
+    if selected:
+        cut_corners(tft, T["LIB_ROW_X"], y, T["LIB_ROW_W"], row_h, T["COL_BG"])
+
+
+def library_scrollbar(tft, window_start, count):
+    top = T["LIB_LIST_Y"]
+    h = T["LIB_ROWS"] * T["LIB_ROW_H"]
+    left = T["LIB_ROW_X"] + T["LIB_ROW_W"]
+    sx, sw = T["LIB_SCROLL_X"], T["LIB_SCROLL_W"]
+    tft.fill_rect(left, top, sx - left, h, T["COL_BG"])
+    tft.fill_rect(sx + sw, top, T["SCREEN_W"] - sx - sw, h, T["COL_BG"])
+    if count <= T["LIB_ROWS"]:
+        tft.fill_rect(sx, top, sw, h, T["COL_BG"])
+        return
+    thumb_h = max(T["LIB_THUMB_MIN_H"], h * T["LIB_ROWS"] // count)
+    thumb_y = top + (h - thumb_h) * window_start // (count - T["LIB_ROWS"])
+    tft.fill_rect(sx, top, sw, thumb_y - top, T["COL_TRACK"])
+    tft.fill_rect(sx, thumb_y, sw, thumb_h, T["COL_THUMB"])
+    tft.fill_rect(sx, thumb_y + thumb_h, sw, top + h - thumb_y - thumb_h, T["COL_TRACK"])
+
+
+def library_footer(tft):
+    y = T["LIB_LIST_Y"] + T["LIB_ROWS"] * T["LIB_ROW_H"]
+    tft.fill_rect(0, y, T["SCREEN_W"], T["SCREEN_H"] - y, T["COL_BG"])
+
+
+def library_screen(tft, entries, selected):
+    n = len(entries)
+    rows = T["LIB_ROWS"]
+    start = max(0, min(selected - rows + 1, n - rows)) if selected >= rows else 0
+    library_header(tft, selected, n)
+    for slot in range(rows):
+        idx = start + slot
+        library_row(tft, slot, entries[idx] if idx < n else None, idx, idx == selected)
+    library_scrollbar(tft, start, n)
+    library_footer(tft)
+
+
+def reader_top(tft):
+    tft.fill_rect(0, 0, T["SCREEN_W"], T["RD_TOP"], T["COL_PAPER"])
+
+
+def reader_line(tft, slot, text):
+    tft.text_box(0, T["RD_TOP"] + slot * T["RD_LINE_H"], T["SCREEN_W"], T["RD_LINE_H"],
+                 T["RD_PAD_X"], T["RD_LINE_TEXT_Y"], text[:T["RD_COLS"]], T["COL_INK"], T["COL_PAPER"])
+
+
+def reader_status(tft, title, page, pages, bookmarked):
+    W, pad = T["SCREEN_W"], T["RD_PAD_X"]
+    y0 = T["RD_TOP"] + T["RD_LINES"] * T["RD_LINE_H"]
+    tft.fill_rect(0, y0, W, T["RD_BAR_Y"] - y0, T["COL_PAPER"])
+
+    bar_w = W - 2 * pad
+    fill_w = bar_w * page // pages if pages else 0
+    by, bh = T["RD_BAR_Y"], T["RD_BAR_H"]
+    tft.fill_rect(0, by, pad, bh, T["COL_PAPER"])
+    tft.fill_rect(pad, by, fill_w, bh, T["COL_BAR_FILL"])
+    tft.fill_rect(pad + fill_w, by, bar_w - fill_w, bh, T["COL_BAR_TRACK"])
+    tft.fill_rect(W - pad, by, pad, bh, T["COL_PAPER"])
+    tft.fill_rect(0, by + bh, W, T["RD_STATUS_Y"] - by - bh, T["COL_PAPER"])
+
+    sy, sh = T["RD_STATUS_Y"], T["SCREEN_H"] - T["RD_STATUS_Y"]
+    left_w = 100
+    tft.text_box(0, sy, left_w, sh, pad, 0, truncate(title, T["RD_STATUS_TITLE_CHARS"]),
+                 T["COL_PAPER_MUTED"], T["COL_PAPER"])
+    s = "%d/%d" % (page, pages)
+    right_w = W - left_w
+    tx = right_w - pad - text_width(len(s))
+    tft.text_box(left_w, sy, right_w, sh, tx, 0, s, T["COL_INK"], T["COL_PAPER"])
+    if bookmarked:
+        tft.text_box(left_w + tx - 10, sy, 6, T["GLYPH_H"], 0, 0, BOOKMARK, T["COL_RIBBON"], T["COL_PAPER"])
+
+
+def reader_page(tft, lines, first_line, title, bookmarked=False):
+    per = T["RD_LINES"]
+    reader_top(tft)
+    for i in range(per):
+        idx = first_line + i
+        reader_line(tft, i, lines[idx] if idx < len(lines) else "")
+    pages = max(1, (len(lines) + per - 1) // per)
+    reader_status(tft, title, first_line // per + 1, pages, bookmarked)
+
+
+def confirm_exit(tft):
+    w, h, sh = T["DLG_W"], T["DLG_H"], T["DLG_SHADOW"]
+    x = (T["SCREEN_W"] - w) // 2
+    y = (T["SCREEN_H"] - h) // 2
+    paper, card, border = T["COL_PAPER"], T["COL_CARD"], T["COL_CARD_BORDER"]
+
+    # drop shadow: right and bottom strips, their outer corners rounded
+    tft.fill_rect(x + w, y + sh, sh, h, T["COL_SHADOW"])
+    tft.fill_rect(x + sh, y + h, w, sh, T["COL_SHADOW"])
+    cut_corner(tft, x + w + sh - 1, y + sh, -1, 1, paper)
+    cut_corner(tft, x + sh, y + h + sh - 1, 1, -1, paper)
+    cut_corner(tft, x + w + sh - 1, y + h + sh - 1, -1, -1, paper)
+
+    # card: 1px border, white body, rounded corners (bottom-right sits on the shadow)
+    tft.fill_rect(x, y, w, h, border)
+    tft.fill_rect(x + 1, y + 1, w - 2, h - 2, card)
+    cut_corner(tft, x, y, 1, 1, paper)
+    cut_corner(tft, x + w - 1, y, -1, 1, paper)
+    cut_corner(tft, x, y + h - 1, 1, -1, paper)
+    cut_corner(tft, x + w - 1, y + h - 1, -1, -1, T["COL_SHADOW"])
+    for cx, cy in ((x + 1, y + 1), (x + w - 2, y + 1), (x + 1, y + h - 2), (x + w - 2, y + h - 2)):
+        tft.fill_rect(cx, cy, 1, 1, border)
+
+    title, sub = "Back to library?", "Your place is saved"
+    tft.text_box(x + 1, y + T["DLG_TITLE_Y"], w - 2, T["GLYPH_H"],
+                 (w - 2 - text_width(len(title))) // 2, 0, title, T["COL_INK"], card)
+    tft.text_box(x + 1, y + T["DLG_SUB_Y"], w - 2, T["GLYPH_H"],
+                 (w - 2 - text_width(len(sub))) // 2, 0, sub, T["COL_PAPER_MUTED"], card)
+
+    bw, bh, bpad = T["DLG_BTN_W"], T["DLG_BTN_H"], T["DLG_BTN_PAD"]
+    by = y + T["DLG_BTN_Y"]
+    for bx, label, fg, bg in ((x + bpad, "No", T["COL_BTN_NO_TEXT"], T["COL_BTN_NO_BG"]),
+                              (x + w - bpad - bw, "Yes", T["COL_BTN_YES_TEXT"], T["COL_BTN_YES_BG"])):
+        tft.text_box(bx, by, bw, bh, (bw - text_width(len(label))) // 2, (bh - 7) // 2, label, fg, bg)
+        cut_corners(tft, bx, by, bw, bh, card)
+
+
+def toast(tft, msg):
+    w, h = T["TOAST_W"], T["TOAST_H"]
+    x = (T["SCREEN_W"] - w) // 2
+    y = T["TOAST_Y"]
+    tft.text_box(x, y, w, h, (w - text_width(len(msg))) // 2, (h - 7) // 2, msg,
+                 T["COL_TOAST_TEXT"], T["COL_TOAST_BG"])
+    cut_corners(tft, x, y, w, h, T["COL_PAPER"])
+
+
+def message(tft, line1, line2="", accent=None):
+    W = T["SCREEN_W"]
+    tft.fill_rect(0, 0, W, T["SCREEN_H"], T["COL_BG"])
+    tft.text_box(0, T["MSG_LINE1_Y"], W, T["GLYPH_H"], (W - text_width(len(line1))) // 2, 0,
+                 line1, T["COL_HEADING"], T["COL_BG"])
+    tft.fill_rect((W - T["MSG_BAR_W"]) // 2, T["MSG_BAR_Y"], T["MSG_BAR_W"], 2,
+                  accent if accent is not None else T["COL_ACCENT"])
+    if line2:
+        line2 = truncate(line2, T["RD_COLS"])
+        tft.text_box(0, T["MSG_LINE2_Y"], W, T["GLYPH_H"], (W - text_width(len(line2))) // 2, 0,
+                     line2, T["COL_MUTED"], T["COL_BG"])
+
+
+# ---------------------------------------------------------------------------
+# Sample data and scenes
+# ---------------------------------------------------------------------------
+
+def sample_entries():
+    from formats import read_catalog
+    cat = read_catalog(ROOT / "library" / "catalog.bin")
+    if not cat:
+        cat = [{"title": t, "total_lines": 100, "position": 0} for t in
+               ("How to Do Great Work", "The Bus Ticket Theory of Genius", "Superlinear Returns",
+                "Do Things that Don't Scale", "Maker's Schedule, Manager's Schedule",
+                "How to Start a Startup", "Why Nerds are Unpopular", "Hackers and Painters",
+                "The Age of the Essay", "Lies We Tell Kids")]
+    demo_pct = {1: 34, 3: 100, 4: 72, 7: 8}
+    return [{"title": r["title"], "pct": demo_pct.get(i, 0)} for i, r in enumerate(cat)]
+
+
+def sample_book():
+    from textutil import wrap_text
+    path = ROOT / "essays" / "greatwork.txt"
+    if not path.exists():
+        cands = sorted((ROOT / "essays").glob("*.txt"))
+        path = cands[0] if cands else None
+    if path is None:
+        text = ("If you collected lists of techniques for doing great work in a lot of "
+                "different fields, what would the intersection look like? ") * 40
+        return "How to Do Great Work", wrap_text(text, T["RD_COLS"])
+    raw = path.read_text(errors="ignore")
+    title, _, body = raw.partition("\n")
+    return title.strip(), wrap_text(body, T["RD_COLS"])
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--scale", type=int, default=4)
+    ap.add_argument("--out", default=str(Path(__file__).parent / "out"))
+    args = ap.parse_args()
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    entries = sample_entries()
+    title, lines = sample_book()
+    first = T["RD_LINES"]
+
+    scenes = {}
+
+    def scene(name, fn):
+        tft = Tft()
+        fn(tft)
+        scenes[name] = tft.img
+
+    scene("1_library", lambda t: library_screen(t, entries, 1))
+    scene("2_library_scrolled", lambda t: library_screen(t, entries, 10))
+    scene("3_reader", lambda t: reader_page(t, lines, first, title))
+    scene("4_reader_bookmarked", lambda t: reader_page(t, lines, first, title, bookmarked=True))
+    scene("5_toast", lambda t: (reader_page(t, lines, first, title, bookmarked=True),
+                                toast(t, BOOKMARK + " Bookmarked")))
+    scene("6_confirm", lambda t: (reader_page(t, lines, first, title), confirm_exit(t)))
+    scene("7_opening", lambda t: message(t, "Opening" + ELLIPSIS, title))
+    scene("8_sd_error", lambda t: message(t, "SD card error", "Press any button", T["COL_ERROR"]))
+
+    s = args.scale
+    for name, img in scenes.items():
+        img.resize((img.width * s, img.height * s), Image.NEAREST).save(out / f"{name}.png")
+
+    # contact sheet: every scene side by side, labelled
+    cols = 2
+    cell_w, cell_h = T["SCREEN_W"] * s, T["SCREEN_H"] * s
+    gap, label_h = 24, 28
+    rows = (len(scenes) + cols - 1) // cols
+    sheet = Image.new("RGB", (cols * cell_w + (cols + 1) * gap, rows * (cell_h + label_h + gap) + gap), (40, 40, 44))
+    d = ImageDraw.Draw(sheet)
+    for i, (name, img) in enumerate(scenes.items()):
+        cx = gap + (i % cols) * (cell_w + gap)
+        cy = gap + (i // cols) * (cell_h + label_h + gap)
+        d.text((cx, cy), name, fill=(220, 220, 220))
+        sheet.paste(img.resize((cell_w, cell_h), Image.NEAREST), (cx, cy + label_h))
+    sheet.save(out / "all.png")
+
+    undrawn = [n for n, img in scenes.items() if (255, 0, 255) in [c for _, c in img.getcolors(1 << 16)]]
+    print(f"wrote {len(scenes)} scenes to {out}")
+    if undrawn:
+        print("WARNING: pixels never drawn (magenta) in:", ", ".join(undrawn))
+
+
+if __name__ == "__main__":
+    main()
