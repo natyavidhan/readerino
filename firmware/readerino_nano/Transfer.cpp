@@ -103,6 +103,7 @@ namespace {
     f.close();
   }
 
+#ifndef READERINO_DEBUG_OPEN // dropped from bench debug builds to make room
   void handleList() {
     File root = SD.open("/");
     if (!root) {
@@ -135,6 +136,7 @@ namespace {
     root.close();
     Serial.println(F("ENDLIST"));
   }
+#endif
 
   void runSession() {
     Serial.println(F("READERINO-NANO v1"));
@@ -148,8 +150,10 @@ namespace {
         handlePut(lineBuf + 4);
       } else if (strncmp(lineBuf, "GET ", 4) == 0) {
         handleGet(lineBuf + 4);
+#ifndef READERINO_DEBUG_OPEN
       } else if (strcmp(lineBuf, "LIST") == 0) {
         handleList();
+#endif
       } else if (strncmp(lineBuf, "DELETE ", 7) == 0) {
         handleDelete(lineBuf + 7);
       } else {

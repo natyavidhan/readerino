@@ -344,15 +344,20 @@ namespace {
     }
   }
 
-  // Opens a catalog item -- book, video or image -- at pos (a line or frame).
+  const uint32_t RESUME = 0xFFFFFFFFUL; // openItem: start at the saved position
+
+  // Opens a catalog item -- book, video or image -- at pos (a line or
+  // frame), or where it was left off for RESUME. The record goes straight
+  // into openEntry: no second copy on the stack, since opening a file is
+  // the deepest the stack ever gets (see the SD library's path walk).
   bool openItem(int catalogIndex, uint32_t pos) {
-    CatalogEntry e;
-    if (!Storage::getEntry(catalogIndex, e)) return false;
+    if (!Storage::getEntry(catalogIndex, openEntry)) return false;
+    CatalogEntry &e = openEntry;
+    if (pos == RESUME) pos = e.position;
     Display::message(F("Opening" GLYPH_ELLIPSIS), e.title);
     invalidateLists();
     readerReturn = state;
     openBookIndex = catalogIndex;
-    openEntry = e;
     toastUntilMs = 0;
 
     bool ok;
@@ -456,11 +461,40 @@ namespace {
   }
 }
 
+#ifdef READERINO_DEBUG_OPEN
+// Bench diagnostics (build with -DREADERINO_DEBUG_OPEN=<catalog index>):
+// fills free RAM with a marker, opens that item at boot, and reports over
+// serial whether it opened and how much stack was never touched.
+extern int __heap_start, *__brkval;
+namespace {
+  uint8_t *heapEnd() { return (uint8_t *)(__brkval ? (int)__brkval : (int)&__heap_start); }
+  void paintStack() {
+    uint8_t marker;
+    for (uint8_t *p = heapEnd(); p < &marker - 16; p++) *p = 0xA5;
+  }
+  uint16_t untouched() {
+    uint16_t n = 0;
+    for (uint8_t *p = heapEnd(); *p == 0xA5; p++) n++;
+    return n;
+  }
+}
+#endif
+
 void App::begin() {
+#ifdef READERINO_DEBUG_OPEN
+  paintStack();
+#endif
   Buttons::begin();
   Display::begin();
   sdError = !Storage::begin();
   showHome();
+#ifdef READERINO_DEBUG_OPEN
+  Serial.print(F("boot untouched ")); Serial.println(untouched());
+  state = State::Library;
+  bool ok = openItem(READERINO_DEBUG_OPEN, 0);
+  Serial.print(F("open ")); Serial.print(READERINO_DEBUG_OPEN); Serial.print(F(" ok ")); Serial.print(ok);
+  Serial.print(F(" untouched ")); Serial.println(untouched());
+#endif
 }
 
 void App::onFilesChanged() {
@@ -515,8 +549,7 @@ void App::loop() {
       } else if (sdError || Storage::bookCount() == 0) {
         showLibrary(); // retries the SD card
       } else if (ev == ButtonEvent::SelectShort) {
-        CatalogEntry e;
-        if (Storage::getEntry(libraryList.selection, e)) openItem(libraryList.selection, e.position);
+        openItem(libraryList.selection, RESUME);
       } else if (moveSelection(libraryList, Storage::bookCount(), ev)) {
         redrawLibrary();
       }

@@ -36,12 +36,6 @@ namespace {
     p[3] = (v >> 24) & 0xFF;
   }
 
-  void readFixedCStr(const uint8_t *p, uint8_t len, char *out, uint8_t outSize) {
-    uint8_t n = len < outSize - 1 ? len : outSize - 1;
-    memcpy(out, p, n);
-    out[n] = 0; // packer null-pads every field, so this is always within bounds
-  }
-
   uint32_t recordOffset(int index) {
     return (uint32_t)CAT_HEADER_SIZE + (uint32_t)index * RECORD_SIZE;
   }
@@ -73,24 +67,33 @@ bool Storage::rescan() {
 
 int Storage::bookCount() { return cachedCount; }
 
+namespace {
+  bool readAt(uint32_t pos, void *dst, uint8_t n) {
+    return catalogFile.seek(pos) && catalogFile.read((uint8_t *)dst, n) == n;
+  }
+}
+
+// Reads each field straight into `out` rather than the whole 156-byte
+// record into a stack buffer: this runs deep inside list drawing and
+// opening, where the stack is the scarcest thing on the chip. (Small reads
+// are cheap -- the record's block is already in the SD library's cache.)
 bool Storage::getEntry(int index, CatalogEntry &out) {
   if (index < 0 || index >= cachedCount || !catalogFile) return false;
-  catalogFile.seek(recordOffset(index));
-  uint8_t rec[RECORD_SIZE];
-  int n = catalogFile.read(rec, RECORD_SIZE);
-  if (n != RECORD_SIZE) return false;
-
-  readFixedCStr(rec + FILENAME_OFF, DISK_FILENAME_LEN, out.filename, sizeof(out.filename));
-  readFixedCStr(rec + TITLE_OFF, DISK_TITLE_LEN, out.title, sizeof(out.title));
-  out.totalLines = readU32(rec + TOTALLINES_OFF);
-  out.position = readU32(rec + POSITION_OFF);
-  out.kind = rec[KIND_OFF];
-  out.fps = rec[FPS_OFF];
-  out.bookmarkCount = rec[BMCOUNT_OFF];
-  if (out.bookmarkCount > MAX_BOOKMARKS) out.bookmarkCount = MAX_BOOKMARKS;
-  for (uint8_t i = 0; i < MAX_BOOKMARKS; i++) {
-    out.bookmarks[i] = readU32(rec + BOOKMARKS_OFF + i * 4);
+  const uint32_t base = recordOffset(index);
+  uint8_t num[12]; // totalLines, position, bookmarkCount, kind, fps, pad
+  if (!readAt(base + FILENAME_OFF, out.filename, sizeof(out.filename) - 1) ||
+      !readAt(base + TITLE_OFF, out.title, sizeof(out.title) - 1) ||
+      !readAt(base + TOTALLINES_OFF, num, sizeof(num)) ||
+      !readAt(base + BOOKMARKS_OFF, out.bookmarks, sizeof(out.bookmarks))) { // little-endian, like the AVR
+    return false;
   }
+  out.filename[sizeof(out.filename) - 1] = 0; // disk fields are null-padded
+  out.title[sizeof(out.title) - 1] = 0;
+  out.totalLines = readU32(num);
+  out.position = readU32(num + 4);
+  out.bookmarkCount = num[8] > MAX_BOOKMARKS ? MAX_BOOKMARKS : num[8];
+  out.kind = num[9];
+  out.fps = num[10];
   return true;
 }
 

@@ -94,10 +94,14 @@ the patched copy in `firmware/local_libraries/SD`. Clone Nanos with the old
 bootloader need `cpu=atmega328old` to upload.
 
 ```bash
-cd firmware
-arduino-cli compile --fqbn arduino:avr:nano --library local_libraries/SD readerino_nano
-arduino-cli upload -p /dev/ttyUSB0 --fqbn arduino:avr:nano:cpu=atmega328old readerino_nano
+firmware/flash.sh           # build, check it fits, find the Nano's port, upload
+firmware/flash.sh --check   # build + size check only
 ```
+
+`flash.sh` refuses to upload a failed build or one that would run into the
+bootloader (0x7800). It calls `arduino-cli compile --fqbn
+arduino:avr:nano:cpu=atmega328old --library local_libraries/SD` and
+`arduino-cli upload` under the hood.
 
 ## Getting books onto the device
 
