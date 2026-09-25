@@ -116,7 +116,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="+", help="files or directories to pack (.txt/.pdf/.epub)")
     ap.add_argument("-o", "--out", required=True, help="output library directory")
-    ap.add_argument("--width", type=int, default=WRAP_WIDTH, help=f"wrap width in characters (default {WRAP_WIDTH}, 24 for the Nano TFT, 21 for the ESP32 OLED)")
+    ap.add_argument("--width", type=int, default=WRAP_WIDTH, help=f"wrap width in characters (default {WRAP_WIDTH}, must match the firmware's RD_COLS)")
     args = ap.parse_args()
 
     files = collect_inputs(args.inputs)

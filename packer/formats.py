@@ -1,5 +1,5 @@
-"""Binary format definitions shared conceptually with the firmware's
-Catalog/Book readers (see firmware/readerino/Catalog.h and Book.h).
+"""Binary format definitions shared with the firmware's catalog and book
+readers (firmware/readerino_nano/Storage.cpp and Book.cpp).
 
 .rbk book format (little-endian, no implicit padding):
   offset  size  field
@@ -50,7 +50,7 @@ MAX_BOOKMARKS = 8
 RECORD_FMT = f"<32s48s32sIIB3x{MAX_BOOKMARKS}I"
 RECORD_SIZE = struct.calcsize(RECORD_FMT)
 
-WRAP_WIDTH = 24  # Nano TFT reader width (Theme.h RD_COLS); use --width 21 for the ESP32/OLED build
+WRAP_WIDTH = 24  # the reader's line width, Theme.h RD_COLS
 
 
 def write_rbk(path, title: str, author: str, lines: list[str], width: int = WRAP_WIDTH):

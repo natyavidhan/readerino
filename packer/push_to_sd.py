@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Push local files onto the device's SD card over serial, using the
-readerino firmware's Transfer protocol (firmware/readerino_nano/Transfer.cpp,
-or firmware/readerino/Transfer.h on the ESP32 build).
+readerino firmware's Transfer protocol (firmware/readerino_nano/Transfer.cpp).
 
 Typical use is pushing a packed library:
     python3 push_to_sd.py library/*.rbk library/catalog.bin
-    python3 push_to_sd.py --device esp32 library/*.rbk library/catalog.bin
 """
 
 import argparse
@@ -17,13 +15,11 @@ import serial
 
 DEFAULT_PORT = "/dev/ttyUSB0"
 
-# Must match each firmware's TRANSFER_BAUD / TRANSFER_CHUNK_SIZE. The Nano's
-# chunk is kept under its 64-byte serial RX buffer, since it only ACKs once
-# a chunk is written to the card.
-DEVICES = {
-    "nano": {"baud": 115200, "chunk": 48},
-    "esp32": {"baud": 460800, "chunk": 512},
-}
+# Must match the firmware's TRANSFER_BAUD / TRANSFER_CHUNK_SIZE (Config.h).
+# The chunk is kept under the Nano's 64-byte serial RX buffer, since it only
+# ACKs once a chunk is written to the card.
+BAUD = 115200
+CHUNK_SIZE = 48
 
 
 def readline(ser, timeout=10):
@@ -42,7 +38,7 @@ def handshake(ser):
     print(f"Connected: {resp}")
 
 
-def push_file(ser, local_path: Path, remote_name: str, chunk_size: int) -> bool:
+def push_file(ser, local_path: Path, remote_name: str) -> bool:
     size = local_path.stat().st_size
     ser.write(f"PUT {remote_name} {size}\n".encode("utf-8"))
     resp = readline(ser, timeout=10)
@@ -53,7 +49,7 @@ def push_file(ser, local_path: Path, remote_name: str, chunk_size: int) -> bool:
     data = local_path.read_bytes()
     sent = 0
     while sent < size:
-        chunk = data[sent:sent + chunk_size]
+        chunk = data[sent:sent + CHUNK_SIZE]
         ser.write(chunk)
         sent += len(chunk)
         resp = readline(ser, timeout=10)
@@ -80,20 +76,18 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("files", nargs="+", help="files to push (paths on the SD card mirror the basenames)")
     ap.add_argument("-p", "--port", default=DEFAULT_PORT, help=f"serial port (default {DEFAULT_PORT})")
-    ap.add_argument("-d", "--device", choices=DEVICES, default="nano", help="target firmware (default nano)")
     args = ap.parse_args()
-    dev = DEVICES[args.device]
 
     files = [Path(p) for p in args.files]
 
-    ser = serial.Serial(args.port, dev["baud"])
+    ser = serial.Serial(args.port, BAUD)
     try:
         handshake(ser)
         ok, failed = 0, []
         for i, f in enumerate(files, 1):
             remote = "/" + f.name
             print(f"[{i}/{len(files)}] Sending {f.name} ({f.stat().st_size} bytes)...")
-            if push_file(ser, f, remote, dev["chunk"]):
+            if push_file(ser, f, remote):
                 ok += 1
             else:
                 failed.append(f.name)
