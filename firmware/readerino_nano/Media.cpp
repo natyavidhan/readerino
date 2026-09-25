@@ -29,7 +29,7 @@ namespace {
   void ringFill(bool once) {
     while (ringCount < ringCap && !atEof) {
       if (ringCount == 0) ringHead = 0; // keep the free space contiguous
-      uint8_t tail = ringHead + ringCount;
+      uint16_t tail = ringHead + ringCount; // can exceed 255 before wrapping
       if (tail >= ringCap) tail -= ringCap;
       uint8_t space = tail >= ringHead ? ringCap - tail : ringHead - tail;
       int n = file.read(ring + tail, space);
@@ -58,10 +58,16 @@ namespace {
     return file.seek(pos);
   }
 
+  // Little-endian reads. Separate statements: in `get() | get() << 8` the
+  // two calls may run in either order.
+  uint16_t readU16() {
+    uint16_t v = get();
+    return v | (uint16_t)get() << 8;
+  }
+
   uint32_t readU32() {
-    uint32_t v = 0;
-    for (uint8_t i = 0; i < 4; i++) v |= (uint32_t)get() << (8 * i);
-    return v;
+    uint32_t v = readU16();
+    return v | (uint32_t)readU16() << 16;
   }
 
   // Decodes one frame (see packer/media.py encode_frame) onto the screen.
@@ -107,8 +113,8 @@ bool Media::openVideo(const char *path, uint8_t *buffer, uint8_t bufferSize) {
   vidW = get();
   vidH = get();
   frames = readU32();
-  keyInt = get() | (get() << 8);
-  keys = get() | (get() << 8);
+  keyInt = readU16();
+  keys = readU16();
   if (!rate || !keyInt || !keys || vidW > SCREEN_W || vidH > VIDEO_H) {
     close();
     return false;

@@ -445,9 +445,12 @@ namespace {
       Display::mediaStripText(F("The end"), COL_MUTED);
       return;
     }
+    // Each frame goes up a full frame-time after the previous one. If this
+    // one ran late (a heavy frame, or SD re-reads), the clock restarts from
+    // now instead of rushing the next frames to catch up: with no audio to
+    // stay in sync with, catching up would just show as the video speeding up.
     nextDueUs += framePeriodUs;
-    // Fell far behind (e.g. a burst of heavy frames): don't sprint to catch up.
-    if ((long)(micros() - nextDueUs) > 500000L) nextDueUs = micros();
+    if ((long)(micros() - nextDueUs) > 0) nextDueUs = micros() + framePeriodUs;
     if (stripMsgUntil && millis() > stripMsgUntil) stripMsgUntil = 0;
     if (!stripMsgUntil && (Media::nextFrame() - 1) % Media::keyInterval() == 0) drawStrip();
   }

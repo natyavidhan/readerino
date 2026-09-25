@@ -115,6 +115,57 @@ void spiSend(uint8_t data) {
 }
 #endif  // SOFTWARE_SPI
 //------------------------------------------------------------------------------
+// readerino: CRC protection. On the readerino breadboard, SCK reaches the
+// card through a 5V->3.3V resistor divider; its slow edges occasionally
+// register as two clocks, so the card slips one bit and the rest of the
+// transfer comes out shifted (seen dumping a file twice: ~1 event per
+// 30-60KB, every corrupted byte = the right byte shifted left one bit).
+// SPI-mode SD cards normally skip CRCs; here every command carries a real
+// CRC7, CRC checking is switched on in the card (CMD59), every block read
+// is checked against the card's CRC16 and re-read if it doesn't match,
+// and writes carry a CRC16 so the card rejects corrupted data (retried).
+uint8_t const CMD59 = 0X3B;  // CRC_ON_OFF
+// Attempts per block. A glitch hits up to ~1 in 5 block reads while the
+// display is busy, so a handful of attempts could all fail in a row over a
+// long video; 20 makes that practically impossible.
+uint8_t const SD_RETRIES = 20;
+#ifdef SD_COUNT_RETRIES  // diagnostics for test sketches only
+uint16_t sdReadRetries = 0, sdReadFailures = 0, sdWriteRetries = 0;
+#define COUNT(x) (x)++
+#else
+#define COUNT(x)
+#endif
+
+static uint8_t crc7(const uint8_t* p, uint8_t n) {
+  uint8_t crc = 0;
+  while (n--) {
+    uint8_t b = *p++;
+    for (uint8_t i = 0; i < 8; i++, b <<= 1) {
+      crc <<= 1;
+      if ((b ^ crc) & 0X80) {
+        crc ^= 0X09;
+      }
+    }
+  }
+  return (crc << 1) | 1;
+}
+
+// CRC16-CCITT (poly 0x1021, init 0) of a 512-byte data block, a nibble at
+// a time from a 16-entry table.
+static const uint16_t CRC16_NIBBLE[16] PROGMEM = {
+  0X0000, 0X1021, 0X2042, 0X3063, 0X4084, 0X50A5, 0X60C6, 0X70E7,
+  0X8108, 0X9129, 0XA14A, 0XB16B, 0XC18C, 0XD1AD, 0XE1CE, 0XF1EF
+};
+static uint16_t crc16(const uint8_t* p) {
+  uint16_t crc = 0;
+  for (uint16_t i = 0; i < 512; i++) {
+    uint8_t b = p[i];
+    crc = (crc << 4) ^ pgm_read_word(&CRC16_NIBBLE[(crc >> 12) ^ (b >> 4)]);
+    crc = (crc << 4) ^ pgm_read_word(&CRC16_NIBBLE[(crc >> 12) ^ (b & 0X0F)]);
+  }
+  return crc;
+}
+//------------------------------------------------------------------------------
 // send command and return error code.  Return zero for OK
 uint8_t Sd2Card::cardCommand(uint8_t cmd, uint32_t arg) {
   // end read if in partialBlockRead mode
@@ -126,23 +177,13 @@ uint8_t Sd2Card::cardCommand(uint8_t cmd, uint32_t arg) {
   // wait up to 300 ms if busy
   waitNotBusy(300);
 
-  // send command
-  spiSend(cmd | 0x40);
-
-  // send argument
-  for (int8_t s = 24; s >= 0; s -= 8) {
-    spiSend(arg >> s);
+  // send command, argument and its CRC7
+  uint8_t frame[5] = {(uint8_t)(cmd | 0x40), (uint8_t)(arg >> 24), (uint8_t)(arg >> 16),
+                      (uint8_t)(arg >> 8), (uint8_t)arg};
+  for (uint8_t i = 0; i < 5; i++) {
+    spiSend(frame[i]);
   }
-
-  // send CRC
-  uint8_t crc = 0XFF;
-  if (cmd == CMD0) {
-    crc = 0X95;  // correct crc for CMD0 with arg 0
-  }
-  if (cmd == CMD8) {
-    crc = 0X87;  // correct crc for CMD8 with arg 0X1AA
-  }
-  spiSend(crc);
+  spiSend(crc7(frame, 5));
 
   // wait for response
   for (uint8_t i = 0; ((status_ = spiRec()) & 0X80) && i != 0XFF; i++)
@@ -360,6 +401,8 @@ uint8_t Sd2Card::init(uint8_t sckRateID, uint8_t chipSelectPin) {
       spiRec();
     }
   }
+  // readerino: have the card check CRCs from here on (see crc7 above).
+  cardCommand(CMD59, 1);
   chipSelectHigh();
 
   #ifndef SOFTWARE_SPI
@@ -401,7 +444,16 @@ void Sd2Card::partialBlockRead(uint8_t value) {
    the value zero, false, is returned for failure.
 */
 uint8_t Sd2Card::readBlock(uint32_t block, uint8_t* dst) {
-  return readData(block, 0, 512, dst);
+  // readerino: readData checks full-block reads against the card's CRC16
+  for (uint8_t i = 0; i < SD_RETRIES; i++) {
+    if (readData(block, 0, 512, dst)) {
+      return true;
+    }
+    COUNT(sdReadRetries);
+    inBlock_ = 0;  // force a fresh CMD17
+  }
+  COUNT(sdReadFailures);
+  return false;
 }
 //------------------------------------------------------------------------------
 /**
@@ -475,6 +527,18 @@ uint8_t Sd2Card::readData(uint32_t block,
   #endif  // OPTIMIZE_HARDWARE_SPI
 
   offset_ += count;
+  if (offset == 0 && count == 512) {
+    // readerino: whole block -- check it against the CRC16 that follows
+    uint16_t crc = spiRec() << 8;
+    crc |= spiRec();
+    offset_ = 514;
+    readEnd();
+    if (crc != crc16(dst)) {
+      error(SD_CARD_ERROR_CMD17);
+      return false;
+    }
+    return true;
+  }
   if (!partialBlockRead_ || offset_ >= 512) {
     // read rest of data, checksum and set chip select high
     readEnd();
@@ -640,12 +704,18 @@ uint8_t Sd2Card::writeBlock(uint32_t blockNumber, const uint8_t* src, uint8_t bl
   if (type() != SD_CARD_TYPE_SDHC) {
     blockNumber <<= 9;
   }
-  if (cardCommand(CMD24, blockNumber)) {
-    error(SD_CARD_ERROR_CMD24);
-    goto fail;
-  }
-  if (!writeData(DATA_START_BLOCK, src)) {
-    goto fail;
+  // readerino: retry when the card rejects the command or the data's CRC
+  for (uint8_t i = 0;; i++) {
+    if (cardCommand(CMD24, blockNumber)) {
+      error(SD_CARD_ERROR_CMD24);
+    } else if (writeData(DATA_START_BLOCK, src)) {
+      break;
+    }
+    chipSelectHigh();
+    COUNT(sdWriteRetries);
+    if (i == SD_RETRIES - 1) {
+      goto fail;
+    }
   }
   if (blocking) {
     // wait for flash programming to complete
@@ -705,8 +775,10 @@ uint8_t Sd2Card::writeData(uint8_t token, const uint8_t* src) {
     spiSend(src[i]);
   }
   #endif  // OPTIMIZE_HARDWARE_SPI
-  spiSend(0xff);  // dummy crc
-  spiSend(0xff);  // dummy crc
+  // readerino: real CRC16, so the card rejects data corrupted in transit
+  uint16_t crc = crc16(src);
+  spiSend(crc >> 8);
+  spiSend(crc);
 
   status_ = spiRec();
   if ((status_ & DATA_RES_MASK) != DATA_RES_ACCEPTED) {
