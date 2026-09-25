@@ -362,6 +362,12 @@ uint8_t Sd2Card::init(uint8_t sckRateID, uint8_t chipSelectPin) {
       goto fail;
     }
   }
+  // readerino: have the card check CRCs from here on (see crc7 above) --
+  // straight after CMD0, as SdFat does, so the rest of init is protected
+  // too. An unchecked command garbled by a clock glitch during init is the
+  // likeliest way the card once got stuck returning blank (0xFF) blocks
+  // until it was power-cycled.
+  cardCommand(CMD59, 1);
   // check SD version
   if ((cardCommand(CMD8, 0x1AA) & R1_ILLEGAL_COMMAND)) {
     type(SD_CARD_TYPE_SD1);
@@ -401,8 +407,6 @@ uint8_t Sd2Card::init(uint8_t sckRateID, uint8_t chipSelectPin) {
       spiRec();
     }
   }
-  // readerino: have the card check CRCs from here on (see crc7 above).
-  cardCommand(CMD59, 1);
   chipSelectHigh();
 
   #ifndef SOFTWARE_SPI
