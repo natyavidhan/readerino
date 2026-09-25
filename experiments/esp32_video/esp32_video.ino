@@ -16,8 +16,8 @@
 
 // ---- wiring (ESP32 VSPI: SCK = GPIO18, MOSI = GPIO23) ----
 #define TFT_CS 5
-#define TFT_DC 16  // the display's "A0" pin
-#define TFT_RST 17
+#define TFT_DC 21  // the display's "A0" pin
+#define TFT_RST 22 // 21/22 exist on every DevKit (16/17 are missing on WROVER boards)
 #define TFT_LED 4
 #define SPI_HZ 27000000 // ST7735s usually take 40MHz too; drop to 16MHz if the picture is garbled
 

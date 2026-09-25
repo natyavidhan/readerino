@@ -13,8 +13,8 @@ pushed over hardware SPI, paced to the clip's frame rate.
 | SCK | GPIO18 |
 | SDA | GPIO23 |
 | CS | GPIO5 |
-| A0 | GPIO16 |
-| RESET | GPIO17 |
+| A0 | GPIO21 |
+| RESET | GPIO22 |
 | LED | GPIO4 |
 
 All 3.3V logic — no resistor dividers.
