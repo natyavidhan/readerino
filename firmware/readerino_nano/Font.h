@@ -8,14 +8,14 @@
 // ASCII 32..126 are taken from Adafruit_GFX's classic glcdfont.c
 // (Copyright (c) 2012 Adafruit Industries, BSD license -- see
 // Adafruit_GFX_Library/license.txt). Only the printable ASCII range is
-// kept (475 bytes instead of 1280). 0x7F..0x85 are readerino's own
+// kept (475 bytes instead of 1280). 0x7F..0x87 are readerino's own
 // icon glyphs, so icons draw through the same fast text path as letters.
 //
 // tools/simulator reads this file directly, so keep the one-glyph-per-line
 // "0x.., 0x.., 0x.., 0x.., 0x..," layout.
 
 #define FONT_FIRST 0x20
-#define FONT_LAST 0x85
+#define FONT_LAST 0x87
 #define GLYPH_ELLIPSIS "\x7F"
 #define GLYPH_BOOKMARK "\x80"
 #define GLYPH_BOOK "\x81"
@@ -24,6 +24,9 @@
 #define GLYPH_BTN_UP "\x84"
 #define GLYPH_BUTTON "\x83"
 #define GLYPH_BTN_DOWN "\x85"
+// Media rows in the library
+#define GLYPH_PLAY "\x86"
+#define GLYPH_PICTURE "\x87"
 
 const uint8_t FONT[] PROGMEM = {
   0x00, 0x00, 0x00, 0x00, 0x00,  // 0x20 ' '
@@ -128,4 +131,6 @@ const uint8_t FONT[] PROGMEM = {
   0x1C, 0x3E, 0x3E, 0x3E, 0x1C,  // 0x83 circle (center button)
   0x30, 0x3C, 0x3E, 0x3C, 0x30,  // 0x84 triangle (up button)
   0x3E, 0x3E, 0x3E, 0x3E, 0x3E,  // 0x85 square (down button)
+  0x7F, 0x3E, 0x1C, 0x08, 0x00,  // 0x86 play (video)
+  0x7F, 0x61, 0x71, 0x61, 0x7F,  // 0x87 framed mountain (image)
 };

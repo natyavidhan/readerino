@@ -8,10 +8,12 @@ ATmega328P (2KB RAM, 32KB flash).
 The build has two halves:
 
 - **Firmware** (`firmware/readerino_nano/`) — a landscape 160x128 color UI:
-  home menu, library, bookmarks, and a paginated reader.
-- **Packer** (`packer/`) — a Python CLI that turns `.txt`/`.pdf`/`.epub`
-  files into the binary format the device reads, and pushes them onto the
-  SD card over the same USB cable used to flash the firmware.
+  home menu, library, bookmarks, a paginated reader, and a small video
+  player / image viewer.
+- **Packer** (`packer/`) — a Python CLI that turns books (`.txt`/`.pdf`/
+  `.epub`), videos and images into the binary formats the device reads, and
+  pushes them onto the SD card over the same USB cable used to flash the
+  firmware.
 
 ## Screens
 
@@ -35,7 +37,14 @@ screens use the same shapes, e.g. the exit dialog reads "▲ No" / "■ Yes".
 - **Reading** — down/up to turn pages; hold center to bookmark the page, or
   to remove the bookmark if it already has one; tap center for "Back to
   library?" (down = yes and save your place, up = keep reading)
+- **Video** — plays from where you left off; down/up skip 5 seconds
+  forward/back; hold center to bookmark the current second (or remove that
+  bookmark); tap center to pause and get "Back to library?"
+- **Image** — hold center to bookmark it, tap center for "Back to library?"
 - **Settings** — empty for now, center goes back
+
+Videos show a ▶ and images a picture icon in place of the color stripe in
+the library; bookmarks on a video list the time (`1:23`) instead of a page.
 
 ## Hardware and pins
 
@@ -114,6 +123,45 @@ place without losing your reading position or bookmarks — it tracks
 source-file → book-id mappings in a local `.pack_manifest.json` so it knows
 what's already there.
 
+## Videos and images
+
+`pack.py` takes videos (`.mp4`/`.mkv`/`.webm`/`.mov`/`.gif`...) and images
+(`.png`/`.jpg`/...) alongside books; they land in the same library.
+
+```bash
+python3 pack.py clip.mp4 photo.png -o ../library           # 30 fps, black/white threshold
+python3 pack.py footage.mp4 -o ../library --fps 20 --dither # ordinary footage: dithered 1-bit
+```
+
+**Video** is 160x120, 1-bit, no audio, in a `.rvd` file built for a chip
+with 2KB of RAM and no frame buffer (the TFT's own memory is the frame
+buffer):
+
+- Each frame stores only the pixels that changed, as row spans of
+  run-length-coded black/white runs — the exact pixels to rewrite, so the
+  Nano never compares or rebuilds frames. Clean black-and-white animation
+  averages ~700 bytes and ~1,300 rewritten pixels a frame, which plays at
+  a full 30 fps.
+- A full snapshot of every second is stored *outside* the playback stream,
+  so normal playback never pays for a full redraw; resuming, skipping and
+  bookmarks jump to a snapshot and carry on from there.
+- The file is streamed, never loaded: a ~190-byte read-ahead buffer is
+  topped up from the card in the idle time between frames, so a heavy
+  frame's data is usually already in RAM when it's due. The buffer shares
+  memory with the bookmarks list, which isn't needed during playback.
+- `media.decode_video()` is a reference decoder; the encoder is checked
+  against it frame for frame.
+
+**Images** are stored as raw RGB565 (`.rim`), fit into 160x128, and
+streamed from the card straight to the screen.
+
+Before re-packing a library you've been reading on the device, pull its
+catalog so the progress and bookmarks made on the device are kept:
+
+```bash
+python3 push_to_sd.py --pull catalog.bin --into ../library
+```
+
 ## Why a custom binary format
 
 The obvious first version just drops `.txt` files on the SD card and
@@ -146,7 +194,8 @@ the text file."
 ```
 firmware/readerino_nano/  Arduino Nano sketch
   App.*               state machine (home / library / bookmarks / settings / reading / confirm)
-  Display.*           screens (menu, lists, reader, dialog, toast, messages)
+  Display.*           screens (menu, lists, reader, player strip, dialog, toast, messages)
+  Media.*             video player and image viewer
   Tft.*               lean ST7735 hardware-SPI driver
   Theme.h             every color and layout number (read by the simulator too)
   Font.h              5x7 glyphs + icon glyphs
@@ -160,6 +209,7 @@ packer/               host-side Python tool
   extract.py          txt/pdf/epub → plain text
   textutil.py         word-wrap + ASCII sanitization
   formats.py          .rbk / catalog.bin binary layout
+  media.py            video (.rvd) and image (.rim) encoders + reference decoder
   pack.py             CLI entry point
   push_to_sd.py       pushes packed files onto the SD card over USB serial
 ```

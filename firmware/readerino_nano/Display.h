@@ -20,8 +20,9 @@ namespace Display {
   // listHeader(full=false), which repaints just the "3/52" counter.
   // Titles and hints are PROGMEM strings (PSTR / F).
   void listHeader(const __FlashStringHelper *title, int selected, int count, bool full);
+  // kind (KIND_BOOK/VIDEO/IMAGE) picks the color stripe or a media icon.
   void listRow(uint8_t slot, const char *title, const char *right, uint16_t rightColor,
-               int spineIndex, bool selected);
+               int spineIndex, uint8_t kind, bool selected);
   // Redraws only the selected row's title for a marquee frame; offset is
   // pixels into the looping title, 0 = the resting truncated title.
   void listRowTitle(uint8_t slot, const char *title, uint16_t offset);
@@ -39,7 +40,12 @@ namespace Display {
   void readerLine(uint8_t slot, const char *text);
   void readerStatus(const char *title, int page, int pages, bool bookmarked);
 
-  // Overlays drawn on top of the reader page.
+  // Media player strip under the video: progress bar (+ ribbon when the
+  // current second is bookmarked), or a short message in its place.
+  void mediaStrip(uint32_t frame, uint32_t total, bool bookmarked);
+  void mediaStripText(const __FlashStringHelper *text, uint16_t color);
+
+  // Overlays drawn on top of the reader page (or a video / image).
   void confirmExit();
   void toast(const __FlashStringHelper *text, uint16_t bg);
 

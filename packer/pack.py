@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Pack .txt/.pdf/.epub files into the readerino device's binary library
-format: one .rbk file per book plus a catalog.bin index, ready to push onto
+"""Pack books (.txt/.pdf/.epub), videos (.mp4/.mkv/.webm/...) and images
+(.png/.jpg/...) into the readerino device's binary library format: one
+.rbk / .rvd / .rim file each plus a catalog.bin index, ready to push onto
 the SD card over the existing serial transfer protocol.
 
 Usage:
@@ -19,6 +20,7 @@ from pathlib import Path
 from extract import EXTRACTORS
 from textutil import wrap_text, to_ascii
 from formats import write_rbk, write_catalog, read_catalog, WRAP_WIDTH
+import media
 
 MANIFEST_NAME = ".pack_manifest.json"
 
@@ -44,14 +46,53 @@ def collect_inputs(raw_inputs: list[str]) -> list[Path]:
             files.append(p)
         else:
             print(f"warning: not found, skipping: {raw}", file=sys.stderr)
-    return [f for f in files if f.suffix.lower() in EXTRACTORS]
+    return [f for f in files if f.suffix.lower() in EXTRACTORS or media.media_kind(f)]
 
 
-def pack(inputs: list[Path], out_dir: Path, width: int = WRAP_WIDTH):
+def media_title(src: Path) -> str:
+    """'bad_apple.mp4' -> 'Bad Apple'"""
+    return " ".join(w.capitalize() for w in src.stem.replace("_", " ").replace("-", " ").split()) or src.stem
+
+
+def item_id(manifest: dict, key: str) -> int:
+    if key in manifest["books"]:
+        return manifest["books"][key]["id"]
+    item = manifest["next_id"]
+    manifest["next_id"] += 1
+    return item
+
+
+def pack_media(src: Path, kind: str, out_dir: Path, manifest: dict, fps: int, dither: bool):
+    key = str(src.resolve())
+    item = item_id(manifest, key)
+    title = to_ascii(media_title(src))
+    if kind == "video":
+        name = f"v{item:04d}.rvd"
+        frames = media.encode_video(src, out_dir / name, fps, dither)
+        entry = {"total_lines": frames, "fps": fps}
+        info = f"{frames} frames @ {fps}fps"
+    else:
+        name = f"i{item:04d}.rim"
+        media.encode_image(src, out_dir / name)
+        entry = {"total_lines": 1, "fps": 0}
+        info = "image"
+    size = (out_dir / name).stat().st_size
+    manifest["books"][key] = {"id": item, "rbk": name, "title": title, "author": "", "kind": kind, **entry}
+    print(f"OK    {src.name} -> {name}  ({info}, {size / 1e6:.2f} MB) {title!r}")
+
+
+def pack(inputs: list[Path], out_dir: Path, width: int = WRAP_WIDTH, fps: int = 30, dither: bool = False):
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = load_manifest(out_dir)
 
     for src in inputs:
+        kind = media.media_kind(src)
+        if kind:
+            try:
+                pack_media(src, kind, out_dir, manifest, fps, dither)
+            except Exception as e:
+                print(f"FAIL  {src}: {e}", file=sys.stderr)
+            continue
         extractor = EXTRACTORS[src.suffix.lower()]
         try:
             title, author, body = extractor(src)
@@ -68,11 +109,7 @@ def pack(inputs: list[Path], out_dir: Path, width: int = WRAP_WIDTH):
             continue
 
         key = str(src.resolve())
-        if key in manifest["books"]:
-            book_id = manifest["books"][key]["id"]
-        else:
-            book_id = manifest["next_id"]
-            manifest["next_id"] += 1
+        book_id = item_id(manifest, key)
 
         rbk_name = f"b{book_id:04d}.rbk"
         write_rbk(out_dir / rbk_name, title, author, lines, width)
@@ -106,25 +143,31 @@ def build_catalog(out_dir: Path, manifest: dict):
             "total_lines": b["total_lines"],
             "position": prev.get("position", 0),
             "bookmarks": prev.get("bookmarks", []),
+            "kind": b.get("kind", "book"),
+            "fps": b.get("fps", 0),
         })
 
     write_catalog(cat_path, records)
-    print(f"\ncatalog.bin: {len(records)} books")
+    print(f"\ncatalog.bin: {len(records)} items")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("inputs", nargs="+", help="files or directories to pack (.txt/.pdf/.epub)")
+    ap.add_argument("inputs", nargs="+", help="files or directories to pack (books, videos, images)")
     ap.add_argument("-o", "--out", required=True, help="output library directory")
     ap.add_argument("--width", type=int, default=WRAP_WIDTH, help=f"wrap width in characters (default {WRAP_WIDTH}, must match the firmware's RD_COLS)")
+    ap.add_argument("--fps", type=int, default=30, help="video frame rate (default 30)")
+    ap.add_argument("--dither", action="store_true",
+                    help="dither videos to 1-bit instead of a hard black/white threshold -- better for "
+                         "ordinary footage, but much bigger and slower to play than clean black-and-white video")
     args = ap.parse_args()
 
     files = collect_inputs(args.inputs)
     if not files:
-        print("no supported input files found (.txt/.pdf/.epub)", file=sys.stderr)
+        print("no supported input files found", file=sys.stderr)
         sys.exit(1)
 
-    pack(files, Path(args.out), args.width)
+    pack(files, Path(args.out), args.width, args.fps, args.dither)
 
 
 if __name__ == "__main__":

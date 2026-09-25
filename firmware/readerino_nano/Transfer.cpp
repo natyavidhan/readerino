@@ -86,6 +86,23 @@ namespace {
     Serial.println(F("OK"));
   }
 
+  // "GET path" -> "SIZE n", then exactly n raw bytes of the file.
+  void handleGet(char *args) {
+    char path[FILENAME_LEN];
+    toPath(args, path);
+    File f = SD.open(path, O_READ);
+    if (!f) {
+      Serial.println(F("ERR no such file"));
+      return;
+    }
+    Serial.print(F("SIZE "));
+    Serial.println((long)f.size());
+    uint8_t buf[TRANSFER_CHUNK_SIZE];
+    int n;
+    while ((n = f.read(buf, sizeof(buf))) > 0) Serial.write(buf, n);
+    f.close();
+  }
+
   void handleList() {
     File root = SD.open("/");
     if (!root) {
@@ -129,6 +146,8 @@ namespace {
         return;
       } else if (strncmp(lineBuf, "PUT ", 4) == 0) {
         handlePut(lineBuf + 4);
+      } else if (strncmp(lineBuf, "GET ", 4) == 0) {
+        handleGet(lineBuf + 4);
       } else if (strcmp(lineBuf, "LIST") == 0) {
         handleList();
       } else if (strncmp(lineBuf, "DELETE ", 7) == 0) {

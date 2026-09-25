@@ -29,10 +29,12 @@ catalog record (156 bytes):
   0       32    filename (null-padded), e.g. "/b0001.rbk"
   32      48    title (null-padded)
   80      32    author (null-padded)
-  112     4     totalLines
-  116     4     position (last-read line index)
+  112     4     totalLines (videos: frame count; images: 1)
+  116     4     position (last-read line index; videos: frame)
   120     1     bookmarkCount (0-8)
-  121     3     reserved
+  121     1     kind: 0 = book (.rbk), 1 = video (.rvd), 2 = image (.rim)
+  122     1     fps (videos; 0 otherwise)
+  123     1     reserved
   124     32    bookmarks: uint32[8]
 """
 
@@ -47,7 +49,8 @@ CAT_HEADER_FMT = "<4sBBH"
 CAT_HEADER_SIZE = struct.calcsize(CAT_HEADER_FMT)
 
 MAX_BOOKMARKS = 8
-RECORD_FMT = f"<32s48s32sIIB3x{MAX_BOOKMARKS}I"
+RECORD_FMT = f"<32s48s32sIIBBBx{MAX_BOOKMARKS}I"
+KINDS = {"book": 0, "video": 1, "image": 2}
 RECORD_SIZE = struct.calcsize(RECORD_FMT)
 
 WRAP_WIDTH = 24  # the reader's line width, Theme.h RD_COLS
@@ -96,7 +99,7 @@ def read_catalog(path) -> list[dict]:
             raw = f.read(RECORD_SIZE)
             if len(raw) < RECORD_SIZE:
                 break
-            fname, title, author, total_lines, position, bmcount, *bookmarks = \
+            fname, title, author, total_lines, position, bmcount, kind, fps, *bookmarks = \
                 struct.unpack(RECORD_FMT, raw)
             records.append({
                 "filename": fname.split(b"\x00", 1)[0].decode("ascii", "ignore"),
@@ -105,6 +108,8 @@ def read_catalog(path) -> list[dict]:
                 "total_lines": total_lines,
                 "position": position,
                 "bookmarks": list(bookmarks[:bmcount]),
+                "kind": kind,
+                "fps": fps,
             })
     return records
 
@@ -125,5 +130,7 @@ def write_catalog(path, books: list[dict]):
                 b.get("total_lines", 0),
                 b.get("position", 0),
                 len(bookmarks),
+                KINDS[b.get("kind", "book")],
+                b.get("fps", 0),
                 *padded,
             ))

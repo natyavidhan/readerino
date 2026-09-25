@@ -153,7 +153,7 @@ void Display::listHeader(const __FlashStringHelper *title, int selected, int cou
 }
 
 void Display::listRow(uint8_t slot, const char *title, const char *right, uint16_t rightColor,
-                      int spineIndex, bool selected) {
+                      int spineIndex, uint8_t kind, bool selected) {
   uint8_t y = LIB_LIST_Y + slot * LIB_ROW_H;
   uint16_t bg = selected ? COL_SEL_BG : COL_BG;
   uint16_t fg = selected ? COL_SEL_TEXT : COL_TEXT;
@@ -166,8 +166,14 @@ void Display::listRow(uint8_t slot, const char *title, const char *right, uint16
   Tft::textBox(LIB_ROW_X + titleW, y, LIB_PCT_W, LIB_ROW_H,
                LIB_PCT_W - LIB_PCT_PAD_R - textWidth(strlen(right)), LIB_ROW_TEXT_Y, right, rightColor, bg);
 
-  Tft::fillRect(LIB_SPINE_X, y + LIB_ROW_TEXT_Y, LIB_SPINE_W, GLYPH_H - 1,
-                pgm_read_word(&SPINES[spineIndex % SPINE_COUNT]));
+  const uint16_t spine = pgm_read_word(&SPINES[spineIndex % SPINE_COUNT]);
+  if (kind == KIND_BOOK) {
+    Tft::fillRect(LIB_SPINE_X, y + LIB_ROW_TEXT_Y, LIB_SPINE_W, GLYPH_H - 1, spine);
+  } else {
+    // media: a play / picture icon in the spine's color instead of the stripe
+    Tft::textBoxP(LIB_SPINE_X - 1, y + LIB_ROW_TEXT_Y, GLYPH_W - 1, GLYPH_H - 1, 0, 0,
+                  kind == KIND_VIDEO ? PSTR(GLYPH_PLAY) : PSTR(GLYPH_PICTURE), spine, bg);
+  }
   if (selected) cutCorners(LIB_ROW_X, y, LIB_ROW_W, LIB_ROW_H, COL_BG);
 }
 
@@ -318,6 +324,30 @@ void Display::confirmExit() {
   Tft::textBoxP(yesX, by, DLG_BTN_W, DLG_BTN_H, (DLG_BTN_W - textWidth(5)) / 2, (DLG_BTN_H - 7) / 2,
                 PSTR(GLYPH_BTN_DOWN " Yes"), COL_BTN_YES_TEXT, COL_BTN_YES_BG);
   cutCorners(yesX, by, DLG_BTN_W, DLG_BTN_H, COL_CARD);
+}
+
+// ---------------------------------------------------------------------------
+// Media player strip (below the video)
+// ---------------------------------------------------------------------------
+
+void Display::mediaStrip(uint32_t frame, uint32_t total, bool bookmarked) {
+  const uint8_t y = VIDEO_H, h = SCREEN_H - VIDEO_H;
+  const uint8_t fillW = total ? (uint32_t)STRIP_BAR_W * frame / total : 0;
+  Tft::fillRect(0, y, SCREEN_W, STRIP_BAR_Y - y, COL_BG);
+  Tft::fillRect(0, STRIP_BAR_Y, STRIP_BAR_X, STRIP_BAR_H, COL_BG);
+  Tft::fillRect(STRIP_BAR_X, STRIP_BAR_Y, fillW, STRIP_BAR_H, COL_ACCENT);
+  Tft::fillRect(STRIP_BAR_X + fillW, STRIP_BAR_Y, STRIP_BAR_W - fillW, STRIP_BAR_H, COL_TRACK);
+  Tft::fillRect(STRIP_BAR_X + STRIP_BAR_W, STRIP_BAR_Y, STRIP_RIBBON_X - STRIP_BAR_X - STRIP_BAR_W,
+                STRIP_BAR_H, COL_BG);
+  Tft::fillRect(0, STRIP_BAR_Y + STRIP_BAR_H, STRIP_RIBBON_X, SCREEN_H - STRIP_BAR_Y - STRIP_BAR_H, COL_BG);
+  Tft::textBoxP(STRIP_RIBBON_X, y, SCREEN_W - STRIP_RIBBON_X, h, 0, 0,
+                bookmarked ? PSTR(GLYPH_BOOKMARK) : PSTR(""), COL_RIBBON, COL_BG);
+}
+
+void Display::mediaStripText(const __FlashStringHelper *text, uint16_t color) {
+  const char *t = (const char *)text;
+  Tft::textBoxP(0, VIDEO_H, SCREEN_W, SCREEN_H - VIDEO_H, (SCREEN_W - textWidth(strlen_P(t))) / 2, 0,
+                t, color, COL_BG);
 }
 
 void Display::toast(const __FlashStringHelper *text, uint16_t bg) {

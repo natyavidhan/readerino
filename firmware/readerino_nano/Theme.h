@@ -153,6 +153,17 @@
 #define TOAST_H 18
 #define TOAST_Y 86
 
+// Media player: the video fills the top VIDEO_H rows, a progress strip
+// sits below it (bar, and a ribbon when the current second is bookmarked)
+#define VIDEO_H 120
+#define COL_VIDEO_BLACK RGB565(0x00, 0x00, 0x00)
+#define COL_VIDEO_WHITE RGB565(0xFF, 0xFF, 0xFF)
+#define STRIP_BAR_X 8
+#define STRIP_BAR_W 132
+#define STRIP_BAR_Y 123
+#define STRIP_BAR_H 2
+#define STRIP_RIBBON_X 146
+
 // Full-screen messages
 #define MSG_LINE1_Y 50
 #define MSG_BAR_Y 62

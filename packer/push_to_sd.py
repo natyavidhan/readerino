@@ -4,6 +4,10 @@ readerino firmware's Transfer protocol (firmware/readerino_nano/Transfer.cpp).
 
 Typical use is pushing a packed library:
     python3 push_to_sd.py library/*.rbk library/catalog.bin
+
+Before re-packing, pull the device's catalog so the reading progress and
+bookmarks made on the device are kept (pack.py merges them in):
+    python3 push_to_sd.py --pull catalog.bin --into library
 """
 
 import argparse
@@ -72,17 +76,43 @@ def push_file(ser, local_path: Path, remote_name: str) -> bool:
     return True
 
 
+def pull_file(ser, remote_name: str, local_path: Path) -> bool:
+    ser.write(f"GET {remote_name}\n".encode("utf-8"))
+    resp = readline(ser, timeout=10)
+    if not resp.startswith("SIZE "):
+        print(f"  FAIL {remote_name}: device said {resp!r}")
+        return False
+    size = int(resp.split()[1])
+    ser.timeout = 10
+    data = ser.read(size)
+    if len(data) != size:
+        print(f"  FAIL {remote_name}: got {len(data)} of {size} bytes")
+        return False
+    local_path.write_bytes(data)
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("files", nargs="+", help="files to push (paths on the SD card mirror the basenames)")
+    ap.add_argument("files", nargs="*", help="files to push (paths on the SD card mirror the basenames)")
+    ap.add_argument("--pull", action="append", default=[], metavar="NAME",
+                    help="fetch this file from the SD card instead of pushing (repeatable)")
+    ap.add_argument("--into", default=".", help="directory --pull saves into (default .)")
     ap.add_argument("-p", "--port", default=DEFAULT_PORT, help=f"serial port (default {DEFAULT_PORT})")
     args = ap.parse_args()
 
     files = [Path(p) for p in args.files]
+    if not files and not args.pull:
+        ap.error("nothing to push or pull")
 
     ser = serial.Serial(args.port, BAUD)
     try:
         handshake(ser)
+        for name in args.pull:
+            dest = Path(args.into) / name
+            print(f"Pulling {name} -> {dest}")
+            if not pull_file(ser, "/" + name, dest):
+                sys.exit(1)
         ok, failed = 0, []
         for i, f in enumerate(files, 1):
             remote = "/" + f.name

@@ -53,6 +53,14 @@
 #define FILENAME_LEN 16
 #define TITLE_LEN (RD_COLS + 1)
 #define MAX_BOOKMARKS 4
+
+// What a catalog record points at (byte 121 of the record, set by the packer)
+#define KIND_BOOK 0
+#define KIND_VIDEO 1
+#define KIND_IMAGE 2
+
+// Up/down while a video plays skip this many seconds back/forward
+#define VIDEO_SKIP_S 5
 // Bookmarks screen: how many bookmarks across the whole library it lists
 // (6 bytes of RAM each).
 #define MAX_BOOKMARK_LIST 32

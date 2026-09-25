@@ -76,6 +76,9 @@ GEAR = "\x82"
 BUTTON = "\x83"
 BTN_UP = "\x84"
 BTN_DOWN = "\x85"
+PLAY = "\x86"
+PICTURE = "\x87"
+KIND_BOOK, KIND_VIDEO, KIND_IMAGE = 0, 1, 2
 
 
 def to_rgb(c565):
@@ -201,7 +204,7 @@ def list_header(tft, title, selected, count, full=True):
                  s, T["COL_MUTED"], T["COL_BG"])
 
 
-def list_row(tft, slot, title, right, right_color, spine_index, selected):
+def list_row(tft, slot, title, right, right_color, spine_index, selected, kind=0):
     y = T["LIB_LIST_Y"] + slot * T["LIB_ROW_H"]
     row_h = T["LIB_ROW_H"]
     bg = T["COL_SEL_BG"] if selected else T["COL_BG"]
@@ -214,8 +217,12 @@ def list_row(tft, slot, title, right, right_color, spine_index, selected):
     tft.text_box(T["LIB_ROW_X"] + title_w, y, T["LIB_PCT_W"], row_h,
                  T["LIB_PCT_W"] - T["LIB_PCT_PAD_R"] - text_width(len(right)), T["LIB_ROW_TEXT_Y"],
                  right, right_color, bg)
-    tft.fill_rect(T["LIB_SPINE_X"], y + T["LIB_ROW_TEXT_Y"], T["LIB_SPINE_W"], T["GLYPH_H"] - 1,
-                  spine_color(spine_index))
+    if kind == KIND_BOOK:
+        tft.fill_rect(T["LIB_SPINE_X"], y + T["LIB_ROW_TEXT_Y"], T["LIB_SPINE_W"], T["GLYPH_H"] - 1,
+                      spine_color(spine_index))
+    else:
+        tft.text_box(T["LIB_SPINE_X"] - 1, y + T["LIB_ROW_TEXT_Y"], T["GLYPH_W"] - 1, T["GLYPH_H"] - 1, 0, 0,
+                     PLAY if kind == KIND_VIDEO else PICTURE, spine_color(spine_index), bg)
     if selected:
         cut_corners(tft, T["LIB_ROW_X"], y, T["LIB_ROW_W"], row_h, T["COL_BG"])
 
@@ -288,7 +295,7 @@ def list_screen(tft, title, rows, selected, hint, empty=None):
         for slot in range(per):
             idx = start + slot
             if idx < n:
-                list_row(tft, slot, *rows[idx], selected=idx == selected)
+                list_row(tft, slot, *rows[idx][:4], selected=idx == selected, kind=rows[idx][4])
             else:
                 list_empty_row(tft, slot)
         list_scrollbar(tft, start, n)
@@ -300,12 +307,80 @@ HINT_BACK = "Press " + BUTTON + " to go back"
 
 
 def library_rows(entries):
-    return [(e["title"], "%d%%" % e["pct"], progress_color(e["pct"]), i) for i, e in enumerate(entries)]
+    rows = []
+    for i, e in enumerate(entries):
+        kind = e.get("kind", KIND_BOOK)
+        if kind == KIND_IMAGE:
+            rows.append((e["title"], "img", T["COL_MUTED"], i, kind))
+        else:
+            rows.append((e["title"], "%d%%" % e["pct"], progress_color(e["pct"]), i, kind))
+    return rows
 
 
 def bookmark_rows(bookmarks):
-    """bookmarks: list of (book_index, title, page)."""
-    return [(title, "p.%d" % page, T["COL_ACCENT"], book) for book, title, page in bookmarks]
+    """bookmarks: list of (book_index, title, kind, where) -- where is a page
+    number for books, seconds for videos."""
+    rows = []
+    for book, title, kind, where in bookmarks:
+        right = {KIND_VIDEO: "%d:%02d" % divmod(where, 60), KIND_IMAGE: "img"}.get(kind, "p.%d" % where)
+        rows.append((title, right, T["COL_ACCENT"], book, kind))
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Media player
+# ---------------------------------------------------------------------------
+
+def video_frame(tft, frame):
+    """Draws a VIDEO_H x SCREEN_W bool array the way Media::drawFrame
+    leaves the screen."""
+    black, white = to_rgb(T["COL_VIDEO_BLACK"]), to_rgb(T["COL_VIDEO_WHITE"])
+    for y in range(frame.shape[0]):
+        for x in range(frame.shape[1]):
+            tft.px[x, y] = white if frame[y, x] else black
+
+
+def media_strip(tft, frame, total, bookmarked):
+    W, y, h = T["SCREEN_W"], T["VIDEO_H"], T["SCREEN_H"] - T["VIDEO_H"]
+    bx, bw, by, bh, rx = T["STRIP_BAR_X"], T["STRIP_BAR_W"], T["STRIP_BAR_Y"], T["STRIP_BAR_H"], T["STRIP_RIBBON_X"]
+    fill_w = bw * frame // total if total else 0
+    tft.fill_rect(0, y, W, by - y, T["COL_BG"])
+    tft.fill_rect(0, by, bx, bh, T["COL_BG"])
+    tft.fill_rect(bx, by, fill_w, bh, T["COL_ACCENT"])
+    tft.fill_rect(bx + fill_w, by, bw - fill_w, bh, T["COL_TRACK"])
+    tft.fill_rect(bx + bw, by, rx - bx - bw, bh, T["COL_BG"])
+    tft.fill_rect(0, by + bh, rx, T["SCREEN_H"] - by - bh, T["COL_BG"])
+    tft.text_box(rx, y, W - rx, h, 0, 0, BOOKMARK if bookmarked else "", T["COL_RIBBON"], T["COL_BG"])
+
+
+def media_strip_text(tft, text, color):
+    W = T["SCREEN_W"]
+    tft.text_box(0, T["VIDEO_H"], W, T["SCREEN_H"] - T["VIDEO_H"], (W - text_width(len(text))) // 2, 0,
+                 text, color, T["COL_BG"])
+
+
+def image_view(tft, rim_path):
+    """Media::drawImage: the .rim centered on black."""
+    import struct as st
+    data = Path(rim_path).read_bytes()
+    _, w, h, _ = st.unpack_from("<4sBBH", data)
+    x0, y0 = (T["SCREEN_W"] - w) // 2, (T["SCREEN_H"] - h) // 2
+    tft.fill_rect(0, 0, T["SCREEN_W"], T["SCREEN_H"], T["COL_VIDEO_BLACK"])
+    for i in range(w * h):
+        c = (data[8 + 2 * i] << 8) | data[9 + 2 * i]
+        tft.px[x0 + i % w, y0 + i // w] = to_rgb(c)
+
+
+def demo_video_frame():
+    """An original black-and-white test frame (shapes, not any real video)."""
+    import numpy as np
+    h, w = T["VIDEO_H"], T["SCREEN_W"]
+    yy, xx = np.mgrid[0:h, 0:w]
+    frame = (xx - 58) ** 2 + (yy - 58) ** 2 < 34 ** 2           # big disc
+    frame ^= (xx - 112) ** 2 + (yy - 44) ** 2 < 16 ** 2         # small disc
+    frame |= (yy > 96) & ((xx // 20) % 2 == 0)                   # ground stripes
+    frame ^= (abs(xx - 128) + abs(yy - 84) < 14)                 # diamond
+    return frame
 
 
 # ---------------------------------------------------------------------------
@@ -490,9 +565,9 @@ DEMO_TEXT = (
 def sample_entries(demo):
     from formats import read_catalog
     cat = [] if demo else read_catalog(ROOT / "library" / "catalog.bin")
-    titles = [r["title"] for r in cat] or list(DEMO_TITLES)
+    rows = [(r["title"], r.get("kind", 0)) for r in cat] or [(t, 0) for t in DEMO_TITLES]
     demo_pct = {1: 34, 3: 100, 4: 72, 7: 8}
-    return [{"title": t, "pct": demo_pct.get(i, 0)} for i, t in enumerate(titles)]
+    return [{"title": t, "pct": demo_pct.get(i, 0), "kind": k} for i, (t, k) in enumerate(rows)]
 
 
 def sample_book(demo):
@@ -546,6 +621,9 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     entries = sample_entries(args.demo)
+    if not any(e.get("kind") for e in entries):
+        entries[5:5] = [{"title": "Sample Clip", "pct": 41, "kind": KIND_VIDEO},
+                        {"title": "Sunset Hills", "pct": 0, "kind": KIND_IMAGE}]
     title, lines = sample_book(args.demo)
     first = 0 if args.demo else T["RD_LINES"]
 
@@ -556,13 +634,28 @@ def main():
         fn(tft)
         scenes[name] = (label, tft.img)
 
-    bms = [(1, entries[1]["title"], 4), (1, entries[1]["title"], 17), (4, entries[4]["title"], 2),
-           (7, entries[7]["title"], 31), (9 % len(entries), entries[9 % len(entries)]["title"], 12)]
+    bms = [(1, entries[1]["title"], KIND_BOOK, 4), (1, entries[1]["title"], KIND_BOOK, 17),
+           (4, entries[4]["title"], KIND_BOOK, 2), (7, entries[7]["title"], KIND_BOOK, 31),
+           (len(entries) - 2, "Sample Clip", KIND_VIDEO, 83)]
     long_title = entries[1]["title"] + " and a Much Longer Subtitle"
 
     def marquee(t, offset):
         list_screen(t, "Library", library_rows(entries), 1, HINT_MENU)
         list_row_title(t, 1, long_title, offset)
+
+    rim = Path(args.out) / "_sample.rim"
+    import media
+    sample_png = ROOT / "media" / "sunset_hills.png"
+    if not sample_png.exists():
+        from PIL import Image as _I
+        _I.new("RGB", (160, 120), (40, 80, 140)).save(rim.with_suffix(".png"))
+        sample_png = rim.with_suffix(".png")
+    media.encode_image(sample_png, rim)
+    vframe = demo_video_frame()
+
+    def player(t, strip):
+        video_frame(t, vframe)
+        strip(t)
 
     scene("01_home", "Home", lambda t: home(t, 0))
     scene("02_home_bookmarks", "Home \u2014 Bookmarks selected", lambda t: home(t, 1))
@@ -576,6 +669,12 @@ def main():
     scene("08_bookmarks_empty", "Bookmarks \u2014 empty",
           lambda t: list_screen(t, "Bookmarks", [], 0, HINT_MENU, ("No bookmarks yet", "Hold " + BUTTON + " on a page")))
     scene("09_settings", "Settings", settings)
+    scene("09b_video", "Video player", lambda t: player(t, lambda t: media_strip(t, 1900, 6572, False)))
+    scene("09c_video_bookmarked", "Video \u2014 bookmark added",
+          lambda t: player(t, lambda t: media_strip_text(t, BOOKMARK + " Bookmarked", T["COL_PROG_DONE"])))
+    scene("09d_video_confirm", "Video \u2014 Back to library?",
+          lambda t: (player(t, lambda t: media_strip(t, 1900, 6572, True)), confirm_exit(t)))
+    scene("09e_image", "Image viewer", lambda t: image_view(t, rim))
     scene("10_reader", "Reader", lambda t: reader_page(t, lines, first, title))
     scene("11_reader_bookmarked", "Reader \u2014 bookmarked page",
           lambda t: reader_page(t, lines, first, title, bookmarked=True))
@@ -589,6 +688,7 @@ def main():
 
     for old in out.glob("*.png"):
         old.unlink()
+    rim.unlink()
     s = args.scale
     for name, (_, img) in scenes.items():
         img.resize((img.width * s, img.height * s), Image.NEAREST).save(out / f"{name}.png")

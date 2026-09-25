@@ -15,8 +15,10 @@
 struct CatalogEntry {
   char filename[FILENAME_LEN];
   char title[TITLE_LEN];
-  uint32_t totalLines;
-  uint32_t position; // last-read line index
+  uint8_t kind;       // KIND_BOOK / KIND_VIDEO / KIND_IMAGE
+  uint8_t fps;        // videos only
+  uint32_t totalLines; // books: lines; videos: frames; images: 1
+  uint32_t position;   // books: last-read line; videos: last keyframe's frame
   uint8_t bookmarkCount;
   uint32_t bookmarks[MAX_BOOKMARKS];
 };

@@ -4,6 +4,7 @@
 #include "Display.h"
 #include "Storage.h"
 #include "Book.h"
+#include "Media.h"
 #include "Font.h"
 #include <Arduino.h>
 #include <string.h>
@@ -16,21 +17,25 @@
 //   Settings   placeholder, select (short or held) -> Home
 //   Reading    down/up turn pages, hold select toggles a bookmark on this
 //              page, short select asks "Back to library?"
+//   Playing    video: up/down skip back/forward VIDEO_SKIP_S seconds, hold
+//              select toggles a bookmark on this second, short select
+//              pauses and asks "Back to library?"
+//   Viewing    image: hold select toggles a bookmark, short select asks
 //   Confirm    down/square = yes (save position, back to the list the book
 //              was opened from), up/triangle = no (keep reading)
 
 namespace {
-  enum class State : uint8_t { Home, Library, Bookmarks, Settings, Reading, ConfirmExit };
+  enum class State : uint8_t { Home, Library, Bookmarks, Settings, Reading, Playing, Viewing, ConfirmExit };
 
   State state = State::Home;
-  State readerReturn = State::Library; // list to go back to when the reader closes
+  State readerReturn = State::Library; // list to go back to when a book/video/image closes
   uint8_t homeSelection = 0;
   bool sdError = false;
 
   Book book;
   int openBookIndex = -1;   // catalog index of the currently open book, -1 if none
   uint32_t currentLine = 0; // top line index of the current reading page (page-aligned)
-  CatalogEntry openEntry;   // the open book's catalog record, kept for its bookmark list
+  CatalogEntry openEntry;   // the open item's catalog record, kept for its bookmark list
   unsigned long toastUntilMs = 0;
 
   char lineBuf[RD_COLS + 1];
@@ -54,7 +59,14 @@ namespace {
     uint16_t book;
     uint32_t line;
   };
-  BookmarkRef bookmarkRefs[MAX_BOOKMARK_LIST];
+  // The bookmarks index and the media player's read-ahead buffer are never
+  // in use at the same time (the index is rebuilt whenever the Bookmarks
+  // screen opens), so they share this memory.
+  union {
+    BookmarkRef refs[MAX_BOOKMARK_LIST];
+    uint8_t media[MAX_BOOKMARK_LIST * sizeof(BookmarkRef)];
+  } scratch;
+  BookmarkRef *const bookmarkRefs = scratch.refs;
   uint8_t bookmarkRefCount = 0;
 
   // Scrolling title on the selected list row (only when it doesn't fit).
@@ -99,18 +111,22 @@ namespace {
     Display::listRowTitle(marquee.slot, marquee.title, marquee.offset);
   }
 
-  bool isBookmarkedHere() {
+  // Whether the open item has a bookmark at pos (a line, or a video frame).
+  bool isMarked(uint32_t pos) {
     for (uint8_t i = 0; i < openEntry.bookmarkCount; i++) {
-      if (openEntry.bookmarks[i] == currentLine) return true;
+      if (openEntry.bookmarks[i] == pos) return true;
     }
     return false;
   }
 
+  bool isBookmarkedHere() { return isMarked(currentLine); }
+
   uint8_t progressPercent(const CatalogEntry &e) {
     if (e.totalLines == 0) return 0;
-    // position is the top line of the last page read, so the last page of
-    // a book never reaches totalLines by itself.
-    if (e.position > 0 && e.position + RD_LINES >= e.totalLines) return 100;
+    // position is the start of the last page (or second of video) reached,
+    // so the very end never reaches totalLines by itself.
+    uint32_t lastChunk = e.kind == KIND_VIDEO ? e.fps : RD_LINES;
+    if (e.position > 0 && e.position + lastChunk >= e.totalLines) return 100;
     long pct = ((long)e.position * 100L) / (long)e.totalLines;
     return pct > 99 ? 99 : (uint8_t)pct;
   }
@@ -129,11 +145,15 @@ namespace {
       Display::listEmptyRow(slot);
       return;
     }
+    if (e.kind == KIND_IMAGE) {
+      Display::listRow(slot, e.title, "img", COL_MUTED, idx, e.kind, sel);
+      return;
+    }
     uint8_t pct = progressPercent(e);
     char right[5];
     itoa(pct, right, 10);
     strcat(right, "%");
-    Display::listRow(slot, e.title, right, progressColor(pct), idx, sel);
+    Display::listRow(slot, e.title, right, progressColor(pct), idx, e.kind, sel);
   }
 
   void drawBookmarkRow(uint8_t slot, int idx, bool sel) {
@@ -142,9 +162,21 @@ namespace {
       Display::listEmptyRow(slot);
       return;
     }
-    char right[8] = "p.";
-    itoa(bookmarkRefs[idx].line / RD_LINES + 1, right + 2, 10);
-    Display::listRow(slot, e.title, right, COL_ACCENT, bookmarkRefs[idx].book, sel);
+    const uint32_t pos = bookmarkRefs[idx].line;
+    char right[9];
+    if (e.kind == KIND_VIDEO) {
+      // time in the video, m:ss
+      uint32_t sec = e.fps ? pos / e.fps : 0;
+      itoa(sec / 60, right, 10);
+      strcat(right, sec % 60 < 10 ? ":0" : ":");
+      itoa(sec % 60, right + strlen(right), 10);
+    } else if (e.kind == KIND_IMAGE) {
+      strcpy(right, "img");
+    } else {
+      strcpy(right, "p.");
+      itoa(pos / RD_LINES + 1, right + 2, 10);
+    }
+    Display::listRow(slot, e.title, right, COL_ACCENT, bookmarkRefs[idx].book, e.kind, sel);
   }
 
   // Draws a list screen, redrawing only what changed since the last call.
@@ -280,52 +312,109 @@ namespace {
     drawReaderStatus();
   }
 
-  bool openBookAt(int catalogIndex, uint32_t startLine) {
+  // ---- media ----
+  bool playing = false;          // video running (false while paused / at the end)
+  unsigned long nextDueUs = 0;   // when the next video frame should go up
+  unsigned long framePeriodUs = 33333;
+  unsigned long stripMsgUntil = 0; // a "Bookmarked" message is showing in the strip
+
+  // First frame of the second of video currently on screen: where the
+  // position and bookmarks snap to (keyframes are one second apart).
+  uint32_t currentKeyFrame() {
+    uint32_t f = Media::nextFrame();
+    if (f) f--;
+    return f - f % Media::keyInterval();
+  }
+
+  void drawStrip() {
+    Display::mediaStrip(Media::nextFrame(), Media::frameCount(), isMarked(currentKeyFrame()));
+  }
+
+  void videoFrom(uint16_t key) {
+    stripMsgUntil = 0;
+    Media::seekKey(key);
+    drawStrip();
+    playing = true;
+    nextDueUs = micros() + framePeriodUs;
+  }
+
+  void drawImage() {
+    if (!Media::drawImage(openEntry.filename, scratch.media, sizeof(scratch.media))) {
+      Display::message(F("Could not open"), openEntry.filename, COL_ERROR);
+    }
+  }
+
+  // Opens a catalog item -- book, video or image -- at pos (a line or frame).
+  bool openItem(int catalogIndex, uint32_t pos) {
     CatalogEntry e;
     if (!Storage::getEntry(catalogIndex, e)) return false;
     Display::message(F("Opening" GLYPH_ELLIPSIS), e.title);
     invalidateLists();
-    if (!book.open(e.filename)) {
-      Display::message(F("Could not open"), e.filename, COL_ERROR);
-      delay(1200);
-      showList(state);
-      return false;
-    }
     readerReturn = state;
     openBookIndex = catalogIndex;
     openEntry = e;
-    uint32_t total = book.totalLines();
-    if (startLine >= total) startLine = 0;
-    currentLine = (startLine / RD_LINES) * RD_LINES;
-    state = State::Reading;
-    drawReadingPage();
-    return true;
+    toastUntilMs = 0;
+
+    bool ok;
+    if (e.kind == KIND_VIDEO) {
+      bookmarkRefCount = 0; // the index's memory now holds the read-ahead buffer
+      ok = Media::openVideo(e.filename, scratch.media, sizeof(scratch.media));
+      if (ok) {
+        framePeriodUs = 1000000UL / Media::fps();
+        state = State::Playing;
+        videoFrom(pos / Media::keyInterval());
+      }
+    } else if (e.kind == KIND_IMAGE) {
+      bookmarkRefCount = 0;
+      state = State::Viewing;
+      ok = Media::drawImage(e.filename, scratch.media, sizeof(scratch.media));
+    } else {
+      ok = book.open(e.filename);
+      if (ok) {
+        if (pos >= book.totalLines()) pos = 0;
+        currentLine = (pos / RD_LINES) * RD_LINES;
+        state = State::Reading;
+        drawReadingPage();
+      }
+    }
+    if (!ok) {
+      Display::message(F("Could not open"), e.filename, COL_ERROR);
+      delay(1200);
+      openBookIndex = -1;
+      Media::close();
+      showList(readerReturn);
+    }
+    return ok;
   }
 
-  void exitReader(bool save) {
-    if (save && openBookIndex >= 0) {
-      Storage::setPosition(openBookIndex, currentLine);
+  // Closes whatever is open (after the "Back to library?" dialog) and goes
+  // back to the list it was opened from.
+  void closeItem() {
+    if (openBookIndex >= 0) {
+      if (openEntry.kind == KIND_VIDEO) Storage::setPosition(openBookIndex, currentKeyFrame());
+      else if (openEntry.kind == KIND_BOOK) Storage::setPosition(openBookIndex, currentLine);
     }
     book.close();
+    Media::close();
+    playing = false;
     openBookIndex = -1;
     toastUntilMs = 0;
     showList(readerReturn);
   }
 
-  void toggleBookmark() {
-    bool removing = isBookmarkedHere();
-    if (removing) {
-      Storage::removeBookmark(openBookIndex, currentLine);
-    } else {
-      Storage::addBookmark(openBookIndex, currentLine);
-    }
-    Storage::getEntry(openBookIndex, openEntry); // refresh the cached list for the ribbon
-    drawReaderStatus();
-    if (removing) {
-      Display::toast(F("Removed"), COL_TOAST_REMOVED_BG);
-    } else {
-      Display::toast(F(GLYPH_BOOKMARK " Bookmarked"), COL_TOAST_BG);
-    }
+  // Adds a bookmark at pos, or removes it if there already is one.
+  // Returns true if it was removed.
+  bool toggleMark(uint32_t pos) {
+    bool removing = isMarked(pos);
+    if (removing) Storage::removeBookmark(openBookIndex, pos);
+    else Storage::addBookmark(openBookIndex, pos);
+    Storage::getEntry(openBookIndex, openEntry); // refresh the cached list
+    return removing;
+  }
+
+  void showToggleToast(bool removed) {
+    if (removed) Display::toast(F("Removed"), COL_TOAST_REMOVED_BG);
+    else Display::toast(F(GLYPH_BOOKMARK " Bookmarked"), COL_TOAST_BG);
     toastUntilMs = millis() + 900;
   }
 
@@ -341,6 +430,26 @@ namespace {
       return true;
     }
     return false;
+  }
+
+  // Runs the video clock: draws the next frame when it's due, and spends
+  // the time until then reading ahead from the card.
+  void tickVideo() {
+    if (state != State::Playing || !playing) return;
+    if ((long)(micros() - nextDueUs) < 0) {
+      Media::prefetch();
+      return;
+    }
+    if (!Media::drawNextFrame()) {
+      playing = false;
+      Display::mediaStripText(F("The end"), COL_MUTED);
+      return;
+    }
+    nextDueUs += framePeriodUs;
+    // Fell far behind (e.g. a burst of heavy frames): don't sprint to catch up.
+    if ((long)(micros() - nextDueUs) > 500000L) nextDueUs = micros();
+    if (stripMsgUntil && millis() > stripMsgUntil) stripMsgUntil = 0;
+    if (!stripMsgUntil && (Media::nextFrame() - 1) % Media::keyInterval() == 0) drawStrip();
   }
 }
 
@@ -364,9 +473,11 @@ void App::loop() {
   if (toastUntilMs && millis() > toastUntilMs) {
     toastUntilMs = 0;
     if (state == State::Reading) drawReadingPage();
+    else if (state == State::Viewing) drawImage();
   }
 
   tickMarquee();
+  tickVideo();
 
   if (ev == ButtonEvent::None) return;
 
@@ -402,7 +513,7 @@ void App::loop() {
         showLibrary(); // retries the SD card
       } else if (ev == ButtonEvent::SelectShort) {
         CatalogEntry e;
-        if (Storage::getEntry(libraryList.selection, e)) openBookAt(libraryList.selection, e.position);
+        if (Storage::getEntry(libraryList.selection, e)) openItem(libraryList.selection, e.position);
       } else if (moveSelection(libraryList, Storage::bookCount(), ev)) {
         redrawLibrary();
       }
@@ -416,8 +527,8 @@ void App::loop() {
         showBookmarks(); // retries the SD card
       } else if (ev == ButtonEvent::SelectShort) {
         if (bookmarkRefCount > 0) {
-          const BookmarkRef &r = bookmarkRefs[bookmarkList.selection];
-          openBookAt(r.book, r.line);
+          BookmarkRef r = bookmarkRefs[bookmarkList.selection]; // copy: opening reuses this memory
+          openItem(r.book, r.line);
         }
       } else if (moveSelection(bookmarkList, bookmarkRefCount, ev)) {
         redrawBookmarks();
@@ -440,7 +551,39 @@ void App::loop() {
           drawReadingPage();
         }
       } else if (ev == ButtonEvent::SelectLong) {
-        toggleBookmark();
+        bool removed = toggleMark(currentLine);
+        drawReaderStatus();
+        showToggleToast(removed);
+      } else if (ev == ButtonEvent::SelectShort) {
+        toastUntilMs = 0;
+        state = State::ConfirmExit;
+        Display::confirmExit();
+      }
+      break;
+    }
+
+    case State::Playing: {
+      uint16_t key = currentKeyFrame() / Media::keyInterval();
+      if (ev == ButtonEvent::DownPressed) {
+        videoFrom(key + VIDEO_SKIP_S < Media::keyCount() ? key + VIDEO_SKIP_S : Media::keyCount() - 1);
+      } else if (ev == ButtonEvent::UpPressed) {
+        videoFrom(key > VIDEO_SKIP_S ? key - VIDEO_SKIP_S : 0);
+      } else if (ev == ButtonEvent::SelectLong) {
+        bool removed = toggleMark(currentKeyFrame());
+        if (removed) Display::mediaStripText(F("Removed"), COL_MUTED);
+        else Display::mediaStripText(F(GLYPH_BOOKMARK " Bookmarked"), COL_PROG_DONE);
+        stripMsgUntil = millis() + 900;
+        if (!playing) stripMsgUntil = 0; // paused at the end: no frames will clear it
+      } else if (ev == ButtonEvent::SelectShort) {
+        state = State::ConfirmExit;
+        Display::confirmExit();
+      }
+      break;
+    }
+
+    case State::Viewing: {
+      if (ev == ButtonEvent::SelectLong) {
+        showToggleToast(toggleMark(0));
       } else if (ev == ButtonEvent::SelectShort) {
         toastUntilMs = 0;
         state = State::ConfirmExit;
@@ -451,10 +594,19 @@ void App::loop() {
 
     case State::ConfirmExit: {
       if (ev == ButtonEvent::DownPressed) {
-        exitReader(true);
+        closeItem();
       } else if (ev == ButtonEvent::UpPressed) {
-        state = State::Reading;
-        drawReadingPage();
+        // back to whatever the dialog is covering
+        if (openEntry.kind == KIND_VIDEO) {
+          state = State::Playing;
+          videoFrom(currentKeyFrame() / Media::keyInterval());
+        } else if (openEntry.kind == KIND_IMAGE) {
+          state = State::Viewing;
+          drawImage();
+        } else {
+          state = State::Reading;
+          drawReadingPage();
+        }
       }
       // Select is ignored here: only the up/down buttons answer the dialog.
       break;

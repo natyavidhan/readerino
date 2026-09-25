@@ -18,6 +18,16 @@ namespace Tft {
 
   void fillRect(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint16_t color);
 
+  // Low-level streaming, for the media player: select() once, then any
+  // number of setWindow() + pushColor()/pushBytes(), then deselect(). Call
+  // restoreSpi() after touching the SD card mid-stream (see Tft.cpp).
+  void select();
+  void deselect();
+  void restoreSpi();
+  void setWindow(uint8_t x, uint8_t y, uint8_t w, uint8_t h);
+  void pushColor(uint16_t color, uint16_t count);
+  void pushBytes(const uint8_t *data, uint8_t count); // raw big-endian RGB565 bytes
+
   // Fills a w*h box with bg and draws text at (tx, ty) inside it, clipped
   // to the box. Text is 6x8 cells from Font.h; codes outside the font draw
   // as '?'.

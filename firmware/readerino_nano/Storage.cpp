@@ -12,6 +12,8 @@ namespace {
   const uint8_t TOTALLINES_OFF = 112;
   const uint8_t POSITION_OFF = 116;
   const uint8_t BMCOUNT_OFF = 120;
+  const uint8_t KIND_OFF = 121;
+  const uint8_t FPS_OFF = 122;
   const uint8_t BOOKMARKS_OFF = 124;
 
   // Kept open for the session: avoids repeated FAT directory lookups.
@@ -82,6 +84,8 @@ bool Storage::getEntry(int index, CatalogEntry &out) {
   readFixedCStr(rec + TITLE_OFF, DISK_TITLE_LEN, out.title, sizeof(out.title));
   out.totalLines = readU32(rec + TOTALLINES_OFF);
   out.position = readU32(rec + POSITION_OFF);
+  out.kind = rec[KIND_OFF];
+  out.fps = rec[FPS_OFF];
   out.bookmarkCount = rec[BMCOUNT_OFF];
   if (out.bookmarkCount > MAX_BOOKMARKS) out.bookmarkCount = MAX_BOOKMARKS;
   for (uint8_t i = 0; i < MAX_BOOKMARKS; i++) {
@@ -115,9 +119,8 @@ namespace {
   // Writes an entry's bookmark count + list back to its record.
   void writeBookmarks(int index, const CatalogEntry &e) {
     catalogFile.seek(recordOffset(index) + BMCOUNT_OFF);
-    catalogFile.write(&e.bookmarkCount, 1);
-    uint8_t pad[3] = {0, 0, 0};
-    catalogFile.write(pad, 3);
+    catalogFile.write(&e.bookmarkCount, 1); // kind/fps bytes after it are left alone
+    catalogFile.seek(recordOffset(index) + BOOKMARKS_OFF);
     uint8_t buf[4];
     for (uint8_t i = 0; i < MAX_BOOKMARKS; i++) {
       writeU32(buf, e.bookmarks[i]);

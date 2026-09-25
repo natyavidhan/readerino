@@ -56,20 +56,11 @@ namespace {
   // Starts a transaction and opens an address window; everything sent
   // until end() is pixel data filling it row by row.
   void window(uint8_t x, uint8_t y, uint8_t w, uint8_t h) {
-    // Re-assert mode 0 at F_CPU/2 (8MHz) every time: the SD library calls
-    // SPI.beginTransaction() internally even in its software-SPI mode,
-    // which reprograms these registers to its own (slower) settings.
-    SPCR = _BV(SPE) | _BV(MSTR);
-    SPSR = _BV(SPI2X);
-    *csPort &= ~csMask;
-    command(0x2A); // CASET
-    spi(0); spi(x); spi(0); spi(x + w - 1);
-    command(0x2B); // RASET
-    spi(0); spi(y); spi(0); spi(y + h - 1);
-    command(0x2C); // RAMWR
+    Tft::select();
+    Tft::setWindow(x, y, w, h);
   }
 
-  void end() { *csPort |= csMask; }
+  void end() { Tft::deselect(); }
 
   // shift = 0 for normal text, 1 for 2x (each glyph pixel becomes 2x2).
   void textBoxImpl(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t tx, uint8_t ty,
@@ -130,8 +121,7 @@ void Tft::begin() {
   digitalWrite(PIN_TFT_RST, HIGH);
   delay(120);
 
-  SPCR = _BV(SPE) | _BV(MSTR);
-  SPSR = _BV(SPI2X);
+  restoreSpi();
   const uint8_t *p = INIT_CMDS;
   uint8_t count = pgm_read_byte(p++);
   *csPort &= ~csMask;
@@ -149,14 +139,67 @@ void Tft::begin() {
   end();
 }
 
+// ---------------------------------------------------------------------------
+// Streaming. At F_CPU/2 the SPI shifts a byte out in exactly 16 cycles, so
+// instead of polling SPIF after every byte (which roughly doubles the time
+// per byte) the bulk writers below just wait a fixed 17+ cycles between
+// writes -- always enough, never early -- and clear SPIF once at the end
+// so the polled spi() above keeps working afterwards.
+// ---------------------------------------------------------------------------
+
+void Tft::restoreSpi() {
+  // Mode 0 at F_CPU/2 (8MHz). Re-asserted before every window: the SD
+  // library calls SPI.beginTransaction() internally even in its
+  // software-SPI mode, which reprograms these registers to its own
+  // (slower) settings -- and the fixed-timing writes need exactly this.
+  SPCR = _BV(SPE) | _BV(MSTR);
+  SPSR = _BV(SPI2X);
+}
+
+void Tft::select() {
+  restoreSpi();
+  *csPort &= ~csMask;
+}
+
+void Tft::deselect() { *csPort |= csMask; }
+
+void Tft::setWindow(uint8_t x, uint8_t y, uint8_t w, uint8_t h) {
+  command(0x2A); // CASET
+  spi(0); spi(x); spi(0); spi(x + w - 1);
+  command(0x2B); // RASET
+  spi(0); spi(y); spi(0); spi(y + h - 1);
+  command(0x2C); // RAMWR
+}
+
+void Tft::pushColor(uint16_t color, uint16_t count) {
+  if (!count) return;
+  const uint8_t hi = color >> 8, lo = color;
+  do {
+    SPDR = hi;
+    __builtin_avr_delay_cycles(17);
+    SPDR = lo;
+    __builtin_avr_delay_cycles(14); // + the loop's own ~4 cycles
+  } while (--count);
+  __builtin_avr_delay_cycles(17);
+  (void)SPSR; // reading SPSR then SPDR clears SPIF
+  (void)SPDR;
+}
+
+void Tft::pushBytes(const uint8_t *data, uint8_t count) {
+  if (!count) return;
+  do {
+    SPDR = *data++;
+    __builtin_avr_delay_cycles(15); // + ld/loop ~4 cycles
+  } while (--count);
+  __builtin_avr_delay_cycles(17);
+  (void)SPSR;
+  (void)SPDR;
+}
+
 void Tft::fillRect(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint16_t color) {
   if (!w || !h) return;
   window(x, y, w, h);
-  uint8_t hi = color >> 8, lo = color;
-  for (uint16_t n = (uint16_t)w * h; n; n--) {
-    spi(hi);
-    spi(lo);
-  }
+  pushColor(color, (uint16_t)w * h);
   end();
 }
 
