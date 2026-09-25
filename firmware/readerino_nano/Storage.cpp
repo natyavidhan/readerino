@@ -90,6 +90,18 @@ bool Storage::getEntry(int index, CatalogEntry &out) {
   return true;
 }
 
+bool Storage::getTitle(int index, char *out) {
+  out[0] = 0;
+  if (index < 0 || index >= cachedCount || !catalogFile) return false;
+  catalogFile.seek(recordOffset(index) + TITLE_OFF);
+  if (catalogFile.read((uint8_t *)out, DISK_TITLE_LEN) != DISK_TITLE_LEN) {
+    out[0] = 0;
+    return false;
+  }
+  out[DISK_TITLE_LEN] = 0; // packer null-pads, but a full-width title has no terminator
+  return true;
+}
+
 void Storage::setPosition(int index, uint32_t line) {
   if (index < 0 || index >= cachedCount || !catalogFile) return;
   catalogFile.seek(recordOffset(index) + POSITION_OFF);

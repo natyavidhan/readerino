@@ -16,8 +16,8 @@
 //   Settings   placeholder, select (short or held) -> Home
 //   Reading    down/up turn pages, hold select toggles a bookmark on this
 //              page, short select asks "Back to library?"
-//   Confirm    down = yes (save position, back to the list the book was
-//              opened from), up = no (keep reading)
+//   Confirm    down/square = yes (save position, back to the list the book
+//              was opened from), up/triangle = no (keep reading)
 
 namespace {
   enum class State : uint8_t { Home, Library, Bookmarks, Settings, Reading, ConfirmExit };
@@ -57,9 +57,46 @@ namespace {
   BookmarkRef bookmarkRefs[MAX_BOOKMARK_LIST];
   uint8_t bookmarkRefCount = 0;
 
+  // Scrolling title on the selected list row (only when it doesn't fit).
+  struct {
+    bool active;
+    uint8_t slot;
+    uint16_t offset; // pixels into the looping title
+    uint16_t period; // pixels per loop: title + gap
+    unsigned long nextMs;
+    char title[DISK_TITLE_LEN + 1];
+  } marquee;
+
   void invalidateLists() {
     libraryList.lastWindowStart = -1;
     bookmarkList.lastWindowStart = -1;
+    marquee.active = false;
+  }
+
+  // (Re)starts the marquee for the selected row: shows the resting title,
+  // then starts scrolling after a pause if the full title doesn't fit.
+  void startMarquee(uint8_t slot, int bookIndex) {
+    marquee.active = false;
+    if (!Storage::getTitle(bookIndex, marquee.title)) return;
+    uint8_t len = strlen(marquee.title);
+    if (len <= LIB_TITLE_CHARS) return;
+    marquee.slot = slot;
+    marquee.offset = 0;
+    marquee.period = (len + MARQUEE_GAP) * GLYPH_W;
+    marquee.nextMs = millis() + MARQUEE_PAUSE_MS;
+    marquee.active = true;
+    Display::listRowTitle(slot, marquee.title, 0);
+  }
+
+  void tickMarquee() {
+    if (!marquee.active || (long)(millis() - marquee.nextMs) < 0) return;
+    if (++marquee.offset >= marquee.period) {
+      marquee.offset = 0;
+      marquee.nextMs = millis() + MARQUEE_PAUSE_MS;
+    } else {
+      marquee.nextMs = millis() + MARQUEE_STEP_MS;
+    }
+    Display::listRowTitle(marquee.slot, marquee.title, marquee.offset);
   }
 
   bool isBookmarkedHere() {
@@ -111,7 +148,8 @@ namespace {
   }
 
   // Draws a list screen, redrawing only what changed since the last call.
-  void drawList(ListState &ls, int n, const __FlashStringHelper *title,
+  // Returns the on-screen slot of the selected row.
+  uint8_t drawList(ListState &ls, int n, const __FlashStringHelper *title,
                 void (*drawRow)(uint8_t, int, bool)) {
     int windowStart = 0;
     if (ls.selection >= LIB_ROWS) windowStart = ls.selection - LIB_ROWS + 1;
@@ -143,6 +181,7 @@ namespace {
     }
     ls.lastWindowStart = windowStart;
     ls.lastSelectedRow = selectedRow;
+    return selectedRow;
   }
 
   // A list screen showing a message instead of rows.
@@ -160,7 +199,8 @@ namespace {
     } else if (Storage::bookCount() == 0) {
       drawListMessage(F("Library"), F("No books yet"), F("Use push_to_sd.py"));
     } else {
-      drawList(libraryList, Storage::bookCount(), F("Library"), drawLibraryRow);
+      uint8_t slot = drawList(libraryList, Storage::bookCount(), F("Library"), drawLibraryRow);
+      startMarquee(slot, libraryList.selection);
     }
   }
 
@@ -195,7 +235,8 @@ namespace {
     } else if (bookmarkRefCount == 0) {
       drawListMessage(F("Bookmarks"), F("No bookmarks yet"), F("Hold " GLYPH_BUTTON " on a page"));
     } else {
-      drawList(bookmarkList, bookmarkRefCount, F("Bookmarks"), drawBookmarkRow);
+      uint8_t slot = drawList(bookmarkList, bookmarkRefCount, F("Bookmarks"), drawBookmarkRow);
+      startMarquee(slot, bookmarkRefs[bookmarkList.selection].book);
     }
   }
 
@@ -324,6 +365,8 @@ void App::loop() {
     toastUntilMs = 0;
     if (state == State::Reading) drawReadingPage();
   }
+
+  tickMarquee();
 
   if (ev == ButtonEvent::None) return;
 

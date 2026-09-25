@@ -22,6 +22,9 @@ namespace Display {
   void listHeader(const __FlashStringHelper *title, int selected, int count, bool full);
   void listRow(uint8_t slot, const char *title, const char *right, uint16_t rightColor,
                int spineIndex, bool selected);
+  // Redraws only the selected row's title for a marquee frame; offset is
+  // pixels into the looping title, 0 = the resting truncated title.
+  void listRowTitle(uint8_t slot, const char *title, uint16_t offset);
   void listEmptyRow(uint8_t slot);
   void listScrollbar(int windowStart, int count);
   void listFooter(const __FlashStringHelper *hint);

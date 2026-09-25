@@ -3,6 +3,7 @@
 #include "Theme.h"
 #include "Font.h"
 #include <avr/pgmspace.h>
+#include <string.h>
 
 namespace {
   // ST7735R init sequence from Adafruit_ST7735 (Rcmd1 + Rcmd3, BSD
@@ -172,4 +173,37 @@ void Tft::textBoxP(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t tx, uint8
 void Tft::textBox2x(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t tx, uint8_t ty,
                     const char *text, uint16_t fg, uint16_t bg) {
   textBoxImpl(x, y, w, h, tx, ty, text, false, fg, bg, 1);
+}
+
+void Tft::textBoxLoop(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t ty, const char *text,
+                      uint8_t gap, uint16_t offset, uint16_t fg, uint16_t bg) {
+  if (!w || !h) return;
+  const uint8_t len = strlen(text);
+  const uint8_t period = len + gap;
+  const uint8_t startChar = (offset / GLYPH_W) % period;
+  const uint8_t startCol = offset % GLYPH_W;
+  window(x, y, w, h);
+  for (uint8_t r = 0; r < h; r++) {
+    uint8_t gy = r - ty; // wraps past GLYPH_H when r < ty
+    if (gy >= GLYPH_H) {
+      for (uint8_t c = 0; c < w; c++) pixel(bg);
+      continue;
+    }
+    const uint8_t bit = 1 << gy;
+    uint8_t ci = startChar, col = startCol;
+    for (uint8_t c = 0; c < w; c++) {
+      bool on = false;
+      if (ci < len && col < 5) {
+        uint8_t code = text[ci];
+        if (code < FONT_FIRST || code > FONT_LAST) code = '?';
+        on = pgm_read_byte(FONT + (code - FONT_FIRST) * 5 + col) & bit;
+      }
+      pixel(on ? fg : bg);
+      if (++col == GLYPH_W) {
+        col = 0;
+        if (++ci == period) ci = 0;
+      }
+    }
+  }
+  end();
 }

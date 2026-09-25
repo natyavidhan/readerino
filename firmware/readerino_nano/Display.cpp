@@ -171,6 +171,19 @@ void Display::listRow(uint8_t slot, const char *title, const char *right, uint16
   if (selected) cutCorners(LIB_ROW_X, y, LIB_ROW_W, LIB_ROW_H, COL_BG);
 }
 
+void Display::listRowTitle(uint8_t slot, const char *title, uint16_t offset) {
+  const uint8_t y = LIB_LIST_Y + slot * LIB_ROW_H;
+  const uint8_t w = LIB_ROW_X + LIB_ROW_W - LIB_PCT_W - LIB_TITLE_X;
+  if (offset == 0) {
+    char buf[LIB_TITLE_CHARS + 1];
+    truncateInto(buf, title, LIB_TITLE_CHARS);
+    Tft::textBox(LIB_TITLE_X, y, w, LIB_ROW_H, 0, LIB_ROW_TEXT_Y, buf, COL_SEL_TEXT, COL_SEL_BG);
+  } else {
+    Tft::textBoxLoop(LIB_TITLE_X, y, w, LIB_ROW_H, LIB_ROW_TEXT_Y, title, MARQUEE_GAP, offset,
+                     COL_SEL_TEXT, COL_SEL_BG);
+  }
+}
+
 void Display::listEmptyRow(uint8_t slot) {
   Tft::fillRect(0, LIB_LIST_Y + slot * LIB_ROW_H, LIB_ROW_X + LIB_ROW_W, LIB_ROW_H, COL_BG);
 }
@@ -295,15 +308,15 @@ void Display::confirmExit() {
   Tft::textBoxP(x + 1, y + DLG_SUB_Y, w - 2, GLYPH_H, (w - 2 - textWidth(19)) / 2, 0,
                 PSTR("Your place is saved"), COL_PAPER_MUTED, COL_CARD);
 
-  // Left = "No" (UP button), right = "Yes" (DOWN button)
+  // Left = "No" (triangle / up button), right = "Yes" (square / down button)
   const uint8_t by = y + DLG_BTN_Y;
   const uint8_t noX = x + DLG_BTN_PAD;
   const uint8_t yesX = x + w - DLG_BTN_PAD - DLG_BTN_W;
-  Tft::textBoxP(noX, by, DLG_BTN_W, DLG_BTN_H, (DLG_BTN_W - textWidth(2)) / 2, (DLG_BTN_H - 7) / 2,
-                PSTR("No"), COL_BTN_NO_TEXT, COL_BTN_NO_BG);
+  Tft::textBoxP(noX, by, DLG_BTN_W, DLG_BTN_H, (DLG_BTN_W - textWidth(4)) / 2, (DLG_BTN_H - 7) / 2,
+                PSTR(GLYPH_BTN_UP " No"), COL_BTN_NO_TEXT, COL_BTN_NO_BG);
   cutCorners(noX, by, DLG_BTN_W, DLG_BTN_H, COL_CARD);
-  Tft::textBoxP(yesX, by, DLG_BTN_W, DLG_BTN_H, (DLG_BTN_W - textWidth(3)) / 2, (DLG_BTN_H - 7) / 2,
-                PSTR("Yes"), COL_BTN_YES_TEXT, COL_BTN_YES_BG);
+  Tft::textBoxP(yesX, by, DLG_BTN_W, DLG_BTN_H, (DLG_BTN_W - textWidth(5)) / 2, (DLG_BTN_H - 7) / 2,
+                PSTR(GLYPH_BTN_DOWN " Yes"), COL_BTN_YES_TEXT, COL_BTN_YES_BG);
   cutCorners(yesX, by, DLG_BTN_W, DLG_BTN_H, COL_CARD);
 }
 

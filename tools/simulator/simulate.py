@@ -74,6 +74,8 @@ BOOKMARK = "\x80"
 BOOK = "\x81"
 GEAR = "\x82"
 BUTTON = "\x83"
+BTN_UP = "\x84"
+BTN_DOWN = "\x85"
 
 
 def to_rgb(c565):
@@ -119,6 +121,29 @@ class Tft:
                 xx, yy = x + c, y + r
                 if 0 <= xx < self.w and 0 <= yy < self.h:
                     self.px[xx, yy] = fg_rgb if on else bg_rgb
+
+
+    def text_box_loop(self, x, y, w, h, ty, s, gap, offset, fg, bg):
+        """Tft::textBoxLoop: s followed by `gap` spaces, repeated forever,
+        drawn starting `offset` pixels into that loop -- one marquee frame."""
+        fg_rgb, bg_rgb = to_rgb(fg), to_rgb(bg)
+        period = len(s) + gap
+        for r in range(h):
+            gy = r - ty
+            ci, col = divmod(offset, T["GLYPH_W"])
+            ci %= period
+            for c in range(w):
+                on = False
+                if 0 <= gy < T["GLYPH_H"] and ci < len(s) and col < 5:
+                    code = ord(s[ci])
+                    if code < FONT_FIRST or code > FONT_LAST:
+                        code = ord("?")
+                    on = (FONT[(code - FONT_FIRST) * 5 + col] >> gy) & 1
+                self.px[x + c, y + r] = fg_rgb if on else bg_rgb
+                col += 1
+                if col == T["GLYPH_W"]:
+                    col = 0
+                    ci = (ci + 1) % period
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +218,19 @@ def list_row(tft, slot, title, right, right_color, spine_index, selected):
                   spine_color(spine_index))
     if selected:
         cut_corners(tft, T["LIB_ROW_X"], y, T["LIB_ROW_W"], row_h, T["COL_BG"])
+
+
+def list_row_title(tft, slot, title, offset):
+    """Redraws just the selected row's title for a marquee frame. offset 0
+    is the resting state: the normal truncated title."""
+    y = T["LIB_LIST_Y"] + slot * T["LIB_ROW_H"]
+    w = T["LIB_ROW_X"] + T["LIB_ROW_W"] - T["LIB_PCT_W"] - T["LIB_TITLE_X"]
+    if offset == 0:
+        tft.text_box(T["LIB_TITLE_X"], y, w, T["LIB_ROW_H"], 0, T["LIB_ROW_TEXT_Y"],
+                     truncate(title, T["LIB_TITLE_CHARS"]), T["COL_SEL_TEXT"], T["COL_SEL_BG"])
+    else:
+        tft.text_box_loop(T["LIB_TITLE_X"], y, w, T["LIB_ROW_H"], T["LIB_ROW_TEXT_Y"], title,
+                          T["MARQUEE_GAP"], offset, T["COL_SEL_TEXT"], T["COL_SEL_BG"])
 
 
 def list_empty_row(tft, slot):
@@ -400,8 +438,8 @@ def confirm_exit(tft):
 
     bw, bh, bpad = T["DLG_BTN_W"], T["DLG_BTN_H"], T["DLG_BTN_PAD"]
     by = y + T["DLG_BTN_Y"]
-    for bx, label, fg, bg in ((x + bpad, "No", T["COL_BTN_NO_TEXT"], T["COL_BTN_NO_BG"]),
-                              (x + w - bpad - bw, "Yes", T["COL_BTN_YES_TEXT"], T["COL_BTN_YES_BG"])):
+    for bx, label, fg, bg in ((x + bpad, BTN_UP + " No", T["COL_BTN_NO_TEXT"], T["COL_BTN_NO_BG"]),
+                              (x + w - bpad - bw, BTN_DOWN + " Yes", T["COL_BTN_YES_TEXT"], T["COL_BTN_YES_BG"])):
         tft.text_box(bx, by, bw, bh, (bw - text_width(len(label))) // 2, (bh - 7) // 2, label, fg, bg)
         cut_corners(tft, bx, by, bw, bh, card)
 
@@ -496,6 +534,12 @@ def main():
     scene("02_home_bookmarks", lambda t: home(t, 1))
     scene("03_library", lambda t: list_screen(t, "Library", library_rows(entries), 1, HINT_MENU))
     scene("04_library_scrolled", lambda t: list_screen(t, "Library", library_rows(entries), 10, HINT_MENU))
+    def marquee(t, offset):
+        list_screen(t, "Library", library_rows(entries), 1, HINT_MENU)
+        list_row_title(t, 1, entries[1]["title"] + " and a Much Longer Subtitle", offset)
+
+    scene("04b_marquee_mid", lambda t: marquee(t, 40))
+    scene("04c_marquee_wrap", lambda t: marquee(t, 6 * (len(entries[1]["title"]) + 27 + T["MARQUEE_GAP"]) - 30))
     scene("05_bookmarks", lambda t: list_screen(t, "Bookmarks", bookmark_rows(bms), 2, HINT_MENU))
     scene("06_bookmarks_empty", lambda t: list_screen(t, "Bookmarks", [], 0, HINT_MENU,
                                                         ("No bookmarks yet", "Hold " + BUTTON + " on a page")))

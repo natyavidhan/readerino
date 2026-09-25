@@ -26,6 +26,8 @@ namespace Storage {
   bool rescan();
   int bookCount();
   bool getEntry(int index, CatalogEntry &out);
+  // The untruncated title (for the marquee); out must hold DISK_TITLE_LEN + 1.
+  bool getTitle(int index, char *out);
   void setPosition(int index, uint32_t line);
   void addBookmark(int index, uint32_t line);    // drops the oldest when full
   void removeBookmark(int index, uint32_t line);

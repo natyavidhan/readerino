@@ -30,11 +30,13 @@ bar, the title, the page number, and a red ribbon on bookmarked pages).
 
 ### Controls
 
-Three buttons: up, center, down.
+Three buttons: ▲ triangle (up), ● circle (center), ■ square (down). The
+screens use the same shapes, e.g. the exit dialog reads "▲ No" / "■ Yes".
 
 - **Menu** — up/down to pick Library, Bookmarks or Settings, center to open
 - **Library / Bookmarks** — up/down to move, center to open the book (a
-  bookmark opens at its page), hold center to go back to the menu
+  bookmark opens at its page), hold center to go back to the menu. A
+  selected title too long for its row scrolls like a track name on Spotify
 - **Reading** — down/up to turn pages; hold center to bookmark the page, or
   to remove the bookmark if it already has one; tap center for "Back to
   library?" (down = yes and save your place, up = keep reading)

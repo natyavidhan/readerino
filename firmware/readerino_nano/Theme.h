@@ -117,6 +117,11 @@
 #define LIB_SCROLL_X 154
 #define LIB_SCROLL_W 2
 #define LIB_THUMB_MIN_H 6
+// Selected row's title scrolls when it doesn't fit LIB_TITLE_CHARS: waits
+// PAUSE, moves 1px every STEP, loops with a gap of GAP spaces, pauses again
+#define MARQUEE_PAUSE_MS 1200
+#define MARQUEE_STEP_MS 30
+#define MARQUEE_GAP 4
 #define LIB_HINT_Y 112   // "Hold * for menu" footer hint
 #define LIB_EMPTY_Y 50   // first line of an empty list's message
 
