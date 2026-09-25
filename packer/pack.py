@@ -50,8 +50,12 @@ def collect_inputs(raw_inputs: list[str]) -> list[Path]:
 
 
 def media_title(src: Path) -> str:
-    """'bad_apple.mp4' -> 'Bad Apple'"""
-    return " ".join(w.capitalize() for w in src.stem.replace("_", " ").replace("-", " ").split()) or src.stem
+    """'bad_apple.mp4' -> 'Bad Apple'; drops a trailing yt-dlp '[videoid]'
+    and keeps existing capitals ('4K HD' stays '4K HD')."""
+    import re
+    stem = re.sub(r"\s*\[[A-Za-z0-9_-]{6,}\]$", "", src.stem)
+    words = stem.replace("_", " ").replace("-", " ").split()
+    return " ".join(w[:1].upper() + w[1:] for w in words) or src.stem
 
 
 def item_id(manifest: dict, key: str) -> int:

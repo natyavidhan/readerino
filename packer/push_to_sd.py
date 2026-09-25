@@ -83,8 +83,15 @@ def pull_file(ser, remote_name: str, local_path: Path) -> bool:
         print(f"  FAIL {remote_name}: device said {resp!r}")
         return False
     size = int(resp.split()[1])
+    # One read with a fixed timeout can't cover big files (115200 baud is
+    # ~11KB/s): keep going while bytes keep arriving, give up after 10s idle.
     ser.timeout = 10
-    data = ser.read(size)
+    data = bytearray()
+    while len(data) < size:
+        chunk = ser.read(min(4096, size - len(data)))
+        if not chunk:
+            break
+        data += chunk
     if len(data) != size:
         print(f"  FAIL {remote_name}: got {len(data)} of {size} bytes")
         return False
@@ -108,6 +115,8 @@ def main():
     ser = serial.Serial(args.port, BAUD)
     try:
         handshake(ser)
+        if args.pull:
+            Path(args.into).mkdir(parents=True, exist_ok=True)
         for name in args.pull:
             dest = Path(args.into) / name
             print(f"Pulling {name} -> {dest}")
