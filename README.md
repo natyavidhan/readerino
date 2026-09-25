@@ -78,7 +78,8 @@ firmware's own `Theme.h` (all colors and layout numbers) and `Font.h`, so
 you can tweak the design without flashing:
 
 ```bash
-python3 tools/simulator/simulate.py      # -> tools/simulator/out/*.png
+python3 tools/simulator/simulate.py         # -> tools/simulator/out/*.png + screens.png (all in a grid)
+python3 tools/simulator/simulate.py --demo  # same with public-domain sample books, safe to share
 ```
 
 ### Building, flashing, pushing books

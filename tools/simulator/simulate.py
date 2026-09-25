@@ -506,9 +506,38 @@ def sample_book(demo):
     return title.strip(), wrap_text(body, T["RD_COLS"])
 
 
+def _font(size, weight="Medium"):
+    from PIL import ImageFont
+    for path in (f"/usr/share/fonts/noto/NotoSans-{weight}.ttf",
+                 f"/usr/share/fonts/TTF/NotoSans-{weight}.ttf",
+                 "/usr/share/fonts/TTF/DejaVuSans.ttf"):
+        if Path(path).exists():
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default(size)
+
+
+def make_sheet(scenes, path, scale, cols=4):
+    """Every screen in a grid, each labelled at its top-left."""
+    bg, frame, label_col = (24, 24, 28), (70, 70, 78), (225, 225, 230)
+    cw, ch = T["SCREEN_W"] * scale, T["SCREEN_H"] * scale
+    gap, label_h = 48, 40
+    font = _font(24)
+    rows = (len(scenes) + cols - 1) // cols
+    sheet = Image.new("RGB", (cols * cw + (cols + 1) * gap, rows * (label_h + ch) + (rows + 1) * gap), bg)
+    d = ImageDraw.Draw(sheet)
+    for i, (label, img) in enumerate(scenes.values()):
+        x = gap + (i % cols) * (cw + gap)
+        y = gap + (i // cols) * (label_h + ch + gap)
+        d.text((x, y), label, fill=label_col, font=font)
+        sheet.paste(img.resize((cw, ch), Image.NEAREST), (x, y + label_h))
+        d.rectangle((x - 1, y + label_h - 1, x + cw, y + label_h + ch), outline=frame)
+    sheet.save(path)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--scale", type=int, default=4)
+    ap.add_argument("--scale", type=int, default=4, help="scale of the individual screen PNGs")
+    ap.add_argument("--sheet-scale", type=int, default=3, help="scale of each screen in screens.png")
     ap.add_argument("--out", default=str(Path(__file__).parent / "out"))
     ap.add_argument("--demo", action="store_true",
                     help="public-domain sample titles and text instead of your library/ and essays/")
@@ -520,60 +549,53 @@ def main():
     title, lines = sample_book(args.demo)
     first = 0 if args.demo else T["RD_LINES"]
 
-    scenes = {}
+    scenes = {}  # file name -> (label, image)
 
-    def scene(name, fn):
+    def scene(name, label, fn):
         tft = Tft()
         fn(tft)
-        scenes[name] = tft.img
+        scenes[name] = (label, tft.img)
 
     bms = [(1, entries[1]["title"], 4), (1, entries[1]["title"], 17), (4, entries[4]["title"], 2),
            (7, entries[7]["title"], 31), (9 % len(entries), entries[9 % len(entries)]["title"], 12)]
+    long_title = entries[1]["title"] + " and a Much Longer Subtitle"
 
-    scene("01_home", lambda t: home(t, 0))
-    scene("02_home_bookmarks", lambda t: home(t, 1))
-    scene("03_library", lambda t: list_screen(t, "Library", library_rows(entries), 1, HINT_MENU))
-    scene("04_library_scrolled", lambda t: list_screen(t, "Library", library_rows(entries), 10, HINT_MENU))
     def marquee(t, offset):
         list_screen(t, "Library", library_rows(entries), 1, HINT_MENU)
-        list_row_title(t, 1, entries[1]["title"] + " and a Much Longer Subtitle", offset)
+        list_row_title(t, 1, long_title, offset)
 
-    scene("04b_marquee_mid", lambda t: marquee(t, 40))
-    scene("04c_marquee_wrap", lambda t: marquee(t, 6 * (len(entries[1]["title"]) + 27 + T["MARQUEE_GAP"]) - 30))
-    scene("05_bookmarks", lambda t: list_screen(t, "Bookmarks", bookmark_rows(bms), 2, HINT_MENU))
-    scene("06_bookmarks_empty", lambda t: list_screen(t, "Bookmarks", [], 0, HINT_MENU,
-                                                        ("No bookmarks yet", "Hold " + BUTTON + " on a page")))
-    scene("07_settings", settings)
-    scene("08_reader", lambda t: reader_page(t, lines, first, title))
-    scene("09_reader_bookmarked", lambda t: reader_page(t, lines, first, title, bookmarked=True))
-    scene("10_toast_added", lambda t: (reader_page(t, lines, first, title, bookmarked=True),
-                                       toast(t, BOOKMARK + " Bookmarked", T["COL_TOAST_BG"])))
-    scene("11_toast_removed", lambda t: (reader_page(t, lines, first, title),
-                                         toast(t, "Removed", T["COL_TOAST_REMOVED_BG"])))
-    scene("12_confirm", lambda t: (reader_page(t, lines, first, title), confirm_exit(t)))
-    scene("13_opening", lambda t: message(t, "Opening" + ELLIPSIS, title))
-    scene("14_sd_error", lambda t: message(t, "SD card error", "Press any button", T["COL_ERROR"]))
+    scene("01_home", "Home", lambda t: home(t, 0))
+    scene("02_home_bookmarks", "Home \u2014 Bookmarks selected", lambda t: home(t, 1))
+    scene("03_library", "Library", lambda t: list_screen(t, "Library", library_rows(entries), 1, HINT_MENU))
+    scene("04_library_scrolled", "Library \u2014 scrolled",
+          lambda t: list_screen(t, "Library", library_rows(entries), 10, HINT_MENU))
+    scene("05_marquee", "Library \u2014 long title scrolling", lambda t: marquee(t, 40))
+    scene("06_marquee_wrap", "Library \u2014 title looping round",
+          lambda t: marquee(t, 6 * (len(long_title) + T["MARQUEE_GAP"]) - 30))
+    scene("07_bookmarks", "Bookmarks", lambda t: list_screen(t, "Bookmarks", bookmark_rows(bms), 2, HINT_MENU))
+    scene("08_bookmarks_empty", "Bookmarks \u2014 empty",
+          lambda t: list_screen(t, "Bookmarks", [], 0, HINT_MENU, ("No bookmarks yet", "Hold " + BUTTON + " on a page")))
+    scene("09_settings", "Settings", settings)
+    scene("10_reader", "Reader", lambda t: reader_page(t, lines, first, title))
+    scene("11_reader_bookmarked", "Reader \u2014 bookmarked page",
+          lambda t: reader_page(t, lines, first, title, bookmarked=True))
+    scene("12_toast_added", "Bookmark added", lambda t: (reader_page(t, lines, first, title, bookmarked=True),
+                                                         toast(t, BOOKMARK + " Bookmarked", T["COL_TOAST_BG"])))
+    scene("13_toast_removed", "Bookmark removed", lambda t: (reader_page(t, lines, first, title),
+                                                             toast(t, "Removed", T["COL_TOAST_REMOVED_BG"])))
+    scene("14_confirm", "Back to library?", lambda t: (reader_page(t, lines, first, title), confirm_exit(t)))
+    scene("15_opening", "Opening a book", lambda t: message(t, "Opening" + ELLIPSIS, title))
+    scene("16_sd_error", "SD card error", lambda t: message(t, "SD card error", "Press any button", T["COL_ERROR"]))
 
+    for old in out.glob("*.png"):
+        old.unlink()
     s = args.scale
-    for name, img in scenes.items():
+    for name, (_, img) in scenes.items():
         img.resize((img.width * s, img.height * s), Image.NEAREST).save(out / f"{name}.png")
+    make_sheet(scenes, out / "screens.png", args.sheet_scale)
 
-    # contact sheet: every scene side by side, labelled
-    cols = 2
-    cell_w, cell_h = T["SCREEN_W"] * s, T["SCREEN_H"] * s
-    gap, label_h = 24, 28
-    rows = (len(scenes) + cols - 1) // cols
-    sheet = Image.new("RGB", (cols * cell_w + (cols + 1) * gap, rows * (cell_h + label_h + gap) + gap), (40, 40, 44))
-    d = ImageDraw.Draw(sheet)
-    for i, (name, img) in enumerate(scenes.items()):
-        cx = gap + (i % cols) * (cell_w + gap)
-        cy = gap + (i // cols) * (cell_h + label_h + gap)
-        d.text((cx, cy), name, fill=(220, 220, 220))
-        sheet.paste(img.resize((cell_w, cell_h), Image.NEAREST), (cx, cy + label_h))
-    sheet.save(out / "all.png")
-
-    undrawn = [n for n, img in scenes.items() if (255, 0, 255) in [c for _, c in img.getcolors(1 << 16)]]
-    print(f"wrote {len(scenes)} scenes to {out}")
+    undrawn = [n for n, (_, img) in scenes.items() if (255, 0, 255) in [c for _, c in img.getcolors(1 << 16)]]
+    print(f"wrote {len(scenes)} screens + screens.png to {out}")
     if undrawn:
         print("WARNING: pixels never drawn (magenta) in:", ", ".join(undrawn))
 
