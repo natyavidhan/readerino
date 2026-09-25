@@ -270,7 +270,16 @@ uint8_t Sd2Card::init(uint8_t sckRateID, uint8_t chipSelectPin) {
   // set pin modes
   pinMode(chipSelectPin_, OUTPUT);
   digitalWrite(chipSelectPin_, HIGH);
-  #ifndef USE_SPI_LIB
+  // readerino: this was `#ifndef USE_SPI_LIB`, which never fires in this
+  // library version (USE_SPI_LIB is unconditionally #defined up top) --
+  // meaning MOSI/SCK/MISO never got pinMode()'d at all when running
+  // SOFTWARE_SPI+USE_SPI_LIB together, as we are. Confirmed on hardware:
+  // without this, writes to those pins just toggle the pin's weak internal
+  // pull-up rather than actually driving it (it's left in its default
+  // floating INPUT state), which reads as ~0.5-0.7V through a resistor
+  // divider instead of a real HIGH/LOW swing. In hardware-SPI mode this is
+  // fine as-is -- SPI.begin() configures D11/D12/D13 itself.
+  #ifdef SOFTWARE_SPI
   pinMode(SPI_MISO_PIN, INPUT);
   pinMode(SPI_MOSI_PIN, OUTPUT);
   pinMode(SPI_SCK_PIN, OUTPUT);
