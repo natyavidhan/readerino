@@ -66,15 +66,18 @@ def item_id(manifest: dict, key: str) -> int:
     return item
 
 
-def pack_media(src: Path, kind: str, out_dir: Path, manifest: dict, fps: int, dither: bool):
+def pack_media(src: Path, kind: str, out_dir: Path, manifest: dict, fps: int, dither: bool, color: bool):
     key = str(src.resolve())
     item = item_id(manifest, key)
     title = to_ascii(media_title(src))
     if kind == "video":
         name = f"v{item:04d}.rvd"
-        frames = media.encode_video(src, out_dir / name, fps, dither)
+        if color:
+            frames = media.encode_color_video(src, out_dir / name, fps)
+        else:
+            frames = media.encode_video(src, out_dir / name, fps, dither)
         entry = {"total_lines": frames, "fps": fps}
-        info = f"{frames} frames @ {fps}fps"
+        info = f"{frames} frames @ {fps}fps{', 64-colour' if color else ''}"
     else:
         name = f"i{item:04d}.rim"
         media.encode_image(src, out_dir / name)
@@ -85,7 +88,8 @@ def pack_media(src: Path, kind: str, out_dir: Path, manifest: dict, fps: int, di
     print(f"OK    {src.name} -> {name}  ({info}, {size / 1e6:.2f} MB) {title!r}")
 
 
-def pack(inputs: list[Path], out_dir: Path, width: int = WRAP_WIDTH, fps: int = 30, dither: bool = False):
+def pack(inputs: list[Path], out_dir: Path, width: int = WRAP_WIDTH, fps: int = 30, dither: bool = False,
+         color: bool = False):
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = load_manifest(out_dir)
 
@@ -93,7 +97,7 @@ def pack(inputs: list[Path], out_dir: Path, width: int = WRAP_WIDTH, fps: int = 
         kind = media.media_kind(src)
         if kind:
             try:
-                pack_media(src, kind, out_dir, manifest, fps, dither)
+                pack_media(src, kind, out_dir, manifest, fps, dither, color)
             except Exception as e:
                 print(f"FAIL  {src}: {e}", file=sys.stderr)
             continue
@@ -164,6 +168,9 @@ def main():
     ap.add_argument("--dither", action="store_true",
                     help="dither videos to 1-bit instead of a hard black/white threshold -- better for "
                          "ordinary footage, but much bigger and slower to play than clean black-and-white video")
+    ap.add_argument("--color", action="store_true",
+                    help="colour video: 64-colour palette picked from the clip, up to 160x120 at its aspect "
+                         "ratio (16:9 -> 160x90). Use ~15 fps; the default 1-bit mode suits black-and-white clips")
     args = ap.parse_args()
 
     files = collect_inputs(args.inputs)
@@ -171,7 +178,7 @@ def main():
         print("no supported input files found", file=sys.stderr)
         sys.exit(1)
 
-    pack(files, Path(args.out), args.width, args.fps, args.dither)
+    pack(files, Path(args.out), args.width, args.fps, args.dither, args.color)
 
 
 if __name__ == "__main__":

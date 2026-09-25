@@ -135,9 +135,19 @@ what's already there.
 (`.png`/`.jpg`/...) alongside books; they land in the same library.
 
 ```bash
-python3 pack.py clip.mp4 photo.png -o ../library           # 30 fps, black/white threshold
-python3 pack.py footage.mp4 -o ../library --fps 20 --dither # ordinary footage: dithered 1-bit
+python3 pack.py clip.mp4 photo.png -o ../library             # 30 fps, black/white threshold
+python3 pack.py footage.mp4 -o ../library --color --fps 15    # colour: 64-colour palette
+python3 pack.py footage.mp4 -o ../library --fps 20 --dither   # dithered 1-bit
 ```
+
+**Colour video** (`--color`) fits the clip into the largest size its
+aspect ratio allows (16:9 -> 160x90, letterboxed) and uses one 64-colour
+palette picked from the clip itself by median cut, as GIF does -- a byte
+per pixel instead of two, and the palette fits in the 128 bytes of RAM the
+player can spare. A pixel is only redrawn when its colour moves more than a
+small threshold, so compression noise doesn't count as motion. Around
+15 fps suits colour footage: a raw colour frame is 28.8KB against the SD
+card's ~100KB/s, so it relies on most of the picture holding still.
 
 **Video** is 160x120, 1-bit, no audio, in a `.rvd` file built for a chip
 with 2KB of RAM and no frame buffer (the TFT's own memory is the frame

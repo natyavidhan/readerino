@@ -20,6 +20,10 @@ VID_W, VID_H = 160, 120  # 4:3 in landscape; the bottom 8px row is the player's 
 IMG_W, IMG_H = 160, 128
 
 RVD_MAGIC = b"RVD1"
+RVD_1BIT = 1     # header version byte: black/white runs (see encode_frame)
+RVD_PALETTE = 2  # header version byte: 64-colour palette (see encode_color_frame)
+PALETTE_SIZE = 64  # 128 bytes of RGB565 -- all the player can spare for it in RAM
+COLOR_MAX_W, COLOR_MAX_H = 160, 120
 RVD_HEADER_FMT = "<4sBBBBIHH"  # magic, version, fps, width, height, frameCount, keyInterval, keyCount
 RVD_HEADER_SIZE = struct.calcsize(RVD_HEADER_FMT)
 END_OF_FRAME = 0xFF
@@ -155,7 +159,7 @@ def encode_video(src: Path, dst: Path, fps: int = 30, dither: bool = False) -> i
         pos += len(snap)
 
     with open(dst, "wb") as f:
-        f.write(struct.pack(RVD_HEADER_FMT, RVD_MAGIC, 1, fps, VID_W, VID_H, count, key_interval, key_count))
+        f.write(struct.pack(RVD_HEADER_FMT, RVD_MAGIC, RVD_1BIT, fps, VID_W, VID_H, count, key_interval, key_count))
         f.write(struct.pack(f"<{2 * key_count}I", *table))
         for d in deltas:
             f.write(d)
@@ -197,6 +201,196 @@ def decode_video(path: Path, start_key: int = 0):
     pos = table[2 * start_key + 1]
     for _ in range(start_key * key_interval + 1, count):
         pos = _draw_frame(data, pos, screen)
+        yield screen.copy()
+
+
+# ---------------------------------------------------------------------------
+# Colour video (palette)
+# ---------------------------------------------------------------------------
+
+def color_size(src: Path):
+    """Largest size fitting COLOR_MAX_W x COLOR_MAX_H at the source's aspect
+    ratio (16:9 -> 160x90)."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream=width,height", "-of", "csv=p=0", str(src)],
+                         capture_output=True, text=True, check=True).stdout
+    iw, ih = (int(v) for v in out.strip().split(",")[:2])
+    if iw * COLOR_MAX_H >= ih * COLOR_MAX_W:
+        return COLOR_MAX_W, max(2, round(COLOR_MAX_W * ih / iw))
+    return max(2, round(COLOR_MAX_H * iw / ih)), COLOR_MAX_H
+
+
+def read_rgb_frames(src: Path, fps: int, w: int, h: int):
+    vf = f"fps={fps},scale={w}:{h}:flags=area"
+    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(src), "-vf", vf, "-pix_fmt", "rgb24",
+                             "-f", "rawvideo", "-"], stdout=subprocess.PIPE)
+    size = w * h * 3
+    try:
+        while True:
+            raw = proc.stdout.read(size)
+            if len(raw) < size:
+                break
+            yield np.frombuffer(raw, np.uint8).reshape(h, w, 3)
+    finally:
+        proc.stdout.close()
+        if proc.wait() != 0:
+            raise RuntimeError(f"ffmpeg failed on {src}")
+
+
+def build_palette(frames):
+    """One palette for the whole video: median cut (as GIF does) over a
+    mosaic of up to 64 frames spread across it, snapped to RGB565 so what
+    the encoder compares is exactly what the screen shows."""
+    from PIL import Image
+    step = max(1, len(frames) // 64)
+    sample = np.concatenate(frames[::step][:64], axis=0)
+    pal = Image.fromarray(sample).quantize(PALETTE_SIZE, method=Image.Quantize.MEDIANCUT).getpalette()
+    pal = np.array(pal[:PALETTE_SIZE * 3], np.int32).reshape(-1, 3)
+    if len(pal) < PALETTE_SIZE:
+        pal = np.vstack([pal, np.zeros((PALETTE_SIZE - len(pal), 3), np.int32)])
+    return (pal >> [3, 2, 3]) << [3, 2, 3]
+
+
+def to_indices(frame, pal):
+    d = ((frame[:, :, None, :].astype(np.int32) - pal[None, None]) ** 2).sum(-1)
+    return d.argmin(-1).astype(np.uint8)
+
+
+def encode_color_frame(idx, shown, changed) -> bytes:
+    """Spans (y, x, n) as for 1-bit video, then records covering exactly n
+    pixels: a header byte with bit 7 set = that many (low 7 bits + 1)
+    literal palette indices follow; bit 7 clear = a run of (low 7 bits + 1)
+    pixels of the one index that follows. 0xFF ends the frame. Every pixel
+    inside a span is (re)drawn, so `shown` is updated for the whole span."""
+    h, w = idx.shape
+    out = bytearray()
+    for y in range(h):
+        xs = np.flatnonzero(changed[y])
+        if xs.size == 0:
+            continue
+        segments = []
+        start = last = int(xs[0])
+        for x in xs[1:]:
+            x = int(x)
+            if x - last > MERGE_GAP:
+                segments.append((start, last + 1))
+                start = x
+            last = x
+        segments.append((start, last + 1))
+        for x0, x1 in segments:
+            row = idx[y, x0:x1].tolist()
+            shown[y, x0:x1] = idx[y, x0:x1]
+            out += bytes((y, x0, x1 - x0))
+            i, lit = 0, []
+            def flush():
+                while lit:
+                    chunk = lit[:128]
+                    del lit[:128]
+                    out.append(0x80 | (len(chunk) - 1))
+                    out.extend(chunk)
+            while i < len(row):
+                j = i + 1
+                while j < len(row) and row[j] == row[i] and j - i < 128:
+                    j += 1
+                if j - i >= 3:          # worth a run record
+                    flush()
+                    out += bytes((j - i - 1, row[i]))
+                else:
+                    lit.extend(row[i:j])
+                i = j
+            flush()
+    out.append(END_OF_FRAME)
+    return bytes(out)
+
+
+def encode_color_video(src: Path, dst: Path, fps: int = 20, threshold: int = 48, keep=None) -> int:
+    """.rvd with header version RVD_PALETTE: same header / key table /
+    frames / snapshots layout as encode_video, plus the 64-entry RGB565
+    palette (big-endian) right after the key table. A pixel is only
+    redrawn when its colour moved more than `threshold` (sum of |dR|+|dG|+
+    |dB| on 0-255 channels) from what's on screen, so compression noise
+    doesn't count as motion. `keep`, if a list, receives the exact screen
+    state after every frame (for verification)."""
+    w, h = color_size(src)
+    frames = list(read_rgb_frames(src, fps, w, h))
+    if not frames:
+        raise RuntimeError(f"no frames decoded from {src}")
+    pal = build_palette(frames)
+    dist = np.abs(pal[:, None, :] - pal[None, :, :]).sum(-1)
+    key_interval = fps
+    deltas, snapshots = [], []
+    shown = None
+    for i, frame in enumerate(frames):
+        idx = to_indices(frame, pal)
+        if shown is None:
+            shown = np.zeros_like(idx)
+            changed = np.ones(idx.shape, bool)
+        else:
+            changed = dist[shown, idx] > threshold
+        deltas.append(encode_color_frame(idx, shown, changed))
+        if i % key_interval == 0:
+            snapshots.append(encode_color_frame(shown.copy(), shown.copy(), np.ones(idx.shape, bool)))
+        if keep is not None:
+            keep.append(shown.copy())
+    count, key_count = len(deltas), len(snapshots)
+    rgb565 = ((pal[:, 0] >> 3) << 11) | ((pal[:, 1] >> 2) << 5) | (pal[:, 2] >> 3)
+    palette_bytes = rgb565.astype(">u2").tobytes()
+
+    frames_start = RVD_HEADER_SIZE + 8 * key_count + len(palette_bytes)
+    frame_offsets, pos = [], frames_start
+    for d in deltas:
+        frame_offsets.append(pos)
+        pos += len(d)
+    frames_end, table = pos, []
+    for k, snap in enumerate(snapshots):
+        nxt = k * key_interval + 1
+        table += [pos, frame_offsets[nxt] if nxt < count else frames_end]
+        pos += len(snap)
+    with open(dst, "wb") as f:
+        f.write(struct.pack(RVD_HEADER_FMT, RVD_MAGIC, RVD_PALETTE, fps, w, h, count, key_interval, key_count))
+        f.write(struct.pack(f"<{2 * key_count}I", *table))
+        f.write(palette_bytes)
+        for d in deltas:
+            f.write(d)
+        for snap in snapshots:
+            f.write(snap)
+    return count
+
+
+def _draw_color_frame(data, pos, screen):
+    while True:
+        y = data[pos]
+        pos += 1
+        if y == END_OF_FRAME:
+            return pos
+        x, n = data[pos], data[pos + 1]
+        pos += 2
+        while n:
+            hdr = data[pos]
+            length = (hdr & 0x7F) + 1
+            if hdr & 0x80:
+                screen[y, x:x + length] = list(data[pos + 1:pos + 1 + length])
+                pos += 1 + length
+            else:
+                screen[y, x:x + length] = data[pos + 1]
+                pos += 2
+            x += length
+            n -= length
+
+
+def decode_color_video(path: Path, start_key: int = 0):
+    """Reference decoder for RVD_PALETTE files: yields the screen as palette
+    indices (h x w uint8) after every frame from keyframe start_key on."""
+    data = Path(path).read_bytes()
+    magic, ver, fps, w, h, count, key_interval, key_count = struct.unpack_from(RVD_HEADER_FMT, data)
+    assert magic == RVD_MAGIC and ver == RVD_PALETTE
+    table = struct.unpack_from(f"<{2 * key_count}I", data, RVD_HEADER_SIZE)
+    screen = np.zeros((h, w), np.uint8)
+    _draw_color_frame(data, table[2 * start_key], screen)
+    yield screen.copy()
+    pos = table[2 * start_key + 1]
+    for _ in range(start_key * key_interval + 1, count):
+        pos = _draw_color_frame(data, pos, screen)
         yield screen.copy()
 
 

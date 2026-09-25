@@ -103,40 +103,6 @@ namespace {
     f.close();
   }
 
-#ifndef READERINO_DEBUG_OPEN // dropped from bench debug builds to make room
-  void handleList() {
-    File root = SD.open("/");
-    if (!root) {
-      Serial.println(F("ERR could not open SD root"));
-      return;
-    }
-    int count = 0;
-    File e = root.openNextFile();
-    while (e) {
-      if (!e.isDirectory()) count++;
-      e.close();
-      e = root.openNextFile();
-    }
-    root.close();
-
-    Serial.print(F("COUNT "));
-    Serial.println(count);
-
-    root = SD.open("/");
-    e = root.openNextFile();
-    while (e) {
-      if (!e.isDirectory()) {
-        Serial.print(e.name());
-        Serial.print(' ');
-        Serial.println((long)e.size());
-      }
-      e.close();
-      e = root.openNextFile();
-    }
-    root.close();
-    Serial.println(F("ENDLIST"));
-  }
-#endif
 
   void runSession() {
     Serial.println(F("READERINO-NANO v1"));
@@ -150,10 +116,6 @@ namespace {
         handlePut(lineBuf + 4);
       } else if (strncmp(lineBuf, "GET ", 4) == 0) {
         handleGet(lineBuf + 4);
-#ifndef READERINO_DEBUG_OPEN
-      } else if (strcmp(lineBuf, "LIST") == 0) {
-        handleList();
-#endif
       } else if (strncmp(lineBuf, "DELETE ", 7) == 0) {
         handleDelete(lineBuf + 7);
       } else {
