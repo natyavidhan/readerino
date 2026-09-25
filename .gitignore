@@ -12,3 +12,5 @@ media/
 *.mov
 *.rvd
 *.rim
+experiments/esp32_video/video.bin
+experiments/esp32_video/video_blob.S
