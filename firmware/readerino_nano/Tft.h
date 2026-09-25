@@ -26,4 +26,7 @@ namespace Tft {
   // Same, with the text in PROGMEM (F("...") / PSTR("...")).
   void textBoxP(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t tx, uint8_t ty,
                 const char *text, uint16_t fg, uint16_t bg);
+  // Same as textBox, drawn at 2x (12x16 cells).
+  void textBox2x(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t tx, uint8_t ty,
+                 const char *text, uint16_t fg, uint16_t bg);
 }

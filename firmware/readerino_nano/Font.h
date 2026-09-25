@@ -8,16 +8,19 @@
 // ASCII 32..126 are taken from Adafruit_GFX's classic glcdfont.c
 // (Copyright (c) 2012 Adafruit Industries, BSD license -- see
 // Adafruit_GFX_Library/license.txt). Only the printable ASCII range is
-// kept (475 bytes instead of 1280). 0x7F and 0x80 are readerino's own
+// kept (475 bytes instead of 1280). 0x7F..0x83 are readerino's own
 // icon glyphs, so icons draw through the same fast text path as letters.
 //
 // tools/simulator reads this file directly, so keep the one-glyph-per-line
 // "0x.., 0x.., 0x.., 0x.., 0x..," layout.
 
 #define FONT_FIRST 0x20
-#define FONT_LAST 0x80
+#define FONT_LAST 0x83
 #define GLYPH_ELLIPSIS "\x7F"
 #define GLYPH_BOOKMARK "\x80"
+#define GLYPH_BOOK "\x81"
+#define GLYPH_GEAR "\x82"
+#define GLYPH_BUTTON "\x83" // the center button, in hints
 
 const uint8_t FONT[] PROGMEM = {
   0x00, 0x00, 0x00, 0x00, 0x00,  // 0x20 ' '
@@ -117,4 +120,7 @@ const uint8_t FONT[] PROGMEM = {
   0x02, 0x01, 0x02, 0x04, 0x02,  // 0x7E '~'
   0x40, 0x00, 0x40, 0x00, 0x40,  // 0x7F ellipsis
   0x7F, 0x3F, 0x1F, 0x3F, 0x7F,  // 0x80 bookmark ribbon
+  0x7E, 0x42, 0x7E, 0x7E, 0x7E,  // 0x81 book
+  0x2A, 0x1C, 0x36, 0x1C, 0x2A,  // 0x82 gear
+  0x1C, 0x3E, 0x3E, 0x3E, 0x1C,  // 0x83 filled dot
 };

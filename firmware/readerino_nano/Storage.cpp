@@ -99,8 +99,23 @@ void Storage::setPosition(int index, uint32_t line) {
   catalogFile.flush();
 }
 
+namespace {
+  // Writes an entry's bookmark count + list back to its record.
+  void writeBookmarks(int index, const CatalogEntry &e) {
+    catalogFile.seek(recordOffset(index) + BMCOUNT_OFF);
+    catalogFile.write(&e.bookmarkCount, 1);
+    uint8_t pad[3] = {0, 0, 0};
+    catalogFile.write(pad, 3);
+    uint8_t buf[4];
+    for (uint8_t i = 0; i < MAX_BOOKMARKS; i++) {
+      writeU32(buf, e.bookmarks[i]);
+      catalogFile.write(buf, 4);
+    }
+    catalogFile.flush();
+  }
+}
+
 void Storage::addBookmark(int index, uint32_t line) {
-  if (index < 0 || index >= cachedCount || !catalogFile) return;
   CatalogEntry e;
   if (!getEntry(index, e)) return;
 
@@ -114,15 +129,19 @@ void Storage::addBookmark(int index, uint32_t line) {
     for (uint8_t i = 0; i < MAX_BOOKMARKS - 1; i++) e.bookmarks[i] = e.bookmarks[i + 1];
     e.bookmarks[MAX_BOOKMARKS - 1] = line;
   }
+  writeBookmarks(index, e);
+}
 
-  catalogFile.seek(recordOffset(index) + BMCOUNT_OFF);
-  catalogFile.write(&e.bookmarkCount, 1);
-  uint8_t pad[3] = {0, 0, 0};
-  catalogFile.write(pad, 3);
-  uint8_t buf[4];
-  for (uint8_t i = 0; i < MAX_BOOKMARKS; i++) {
-    writeU32(buf, e.bookmarks[i]);
-    catalogFile.write(buf, 4);
+void Storage::removeBookmark(int index, uint32_t line) {
+  CatalogEntry e;
+  if (!getEntry(index, e)) return;
+
+  uint8_t kept = 0;
+  for (uint8_t i = 0; i < e.bookmarkCount; i++) {
+    if (e.bookmarks[i] != line) e.bookmarks[kept++] = e.bookmarks[i];
   }
-  catalogFile.flush();
+  if (kept == e.bookmarkCount) return; // wasn't bookmarked
+  for (uint8_t i = kept; i < MAX_BOOKMARKS; i++) e.bookmarks[i] = 0;
+  e.bookmarkCount = kept;
+  writeBookmarks(index, e);
 }

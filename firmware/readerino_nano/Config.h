@@ -53,6 +53,9 @@
 #define FILENAME_LEN 16
 #define TITLE_LEN (RD_COLS + 1)
 #define MAX_BOOKMARKS 4
+// Bookmarks screen: how many bookmarks across the whole library it lists
+// (6 bytes of RAM each).
+#define MAX_BOOKMARK_LIST 32
 
 // ---- Serial file transfer (host -> SD card via USB) ----
 // RAM is the binding constraint here (2KB total), so the chunk buffer is

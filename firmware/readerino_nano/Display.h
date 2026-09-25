@@ -9,15 +9,26 @@
 namespace Display {
   void begin();
 
-  // Library. A full screen is header(full=true) + LIB_ROWS rows +
-  // scrollbar + footer; moving the selection within the visible window
-  // only needs the two rows that changed plus header(full=false), which
-  // repaints just the "3/52" counter.
-  void libraryHeader(int selected, int count, bool full);
-  void libraryRow(uint8_t slot, const char *title, uint8_t percent, int index, bool selected);
-  void libraryEmptyRow(uint8_t slot);
-  void libraryScrollbar(int windowStart, int count);
-  void libraryFooter();
+  // Home menu: "READERINO" wordmark + HOME_ITEMS buttons. Moving the
+  // selection only needs the two homeItem()s that changed.
+  void home(uint8_t selected);
+  void homeItem(uint8_t item, bool selected);
+
+  // List screens (library, bookmarks). A full screen is listHeader(full)
+  // + LIB_ROWS rows + listScrollbar + listFooter; moving the selection
+  // within the visible window only needs the two rows that changed plus
+  // listHeader(full=false), which repaints just the "3/52" counter.
+  // Titles and hints are PROGMEM strings (PSTR / F).
+  void listHeader(const __FlashStringHelper *title, int selected, int count, bool full);
+  void listRow(uint8_t slot, const char *title, const char *right, uint16_t rightColor,
+               int spineIndex, bool selected);
+  void listEmptyRow(uint8_t slot);
+  void listScrollbar(int windowStart, int count);
+  void listFooter(const __FlashStringHelper *hint);
+  // Replaces the rows and scrollbar with a centered two-line message.
+  void listEmpty(const __FlashStringHelper *line1, const __FlashStringHelper *line2);
+
+  void settings();
 
   // Reader page: top margin + RD_LINES lines + status (progress bar, title,
   // page counter, bookmark ribbon).
@@ -27,7 +38,7 @@ namespace Display {
 
   // Overlays drawn on top of the reader page.
   void confirmExit();
-  void toastBookmarked();
+  void toast(const __FlashStringHelper *text, uint16_t bg);
 
   // Full-screen message on the dark background, e.g. "Opening..." + title.
   void message(const __FlashStringHelper *line1, const char *line2, uint16_t accent = COL_ACCENT);

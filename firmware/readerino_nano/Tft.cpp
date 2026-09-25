@@ -70,14 +70,16 @@ namespace {
 
   void end() { *csPort |= csMask; }
 
+  // shift = 0 for normal text, 1 for 2x (each glyph pixel becomes 2x2).
   void textBoxImpl(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t tx, uint8_t ty,
-                   const char *text, bool inFlash, uint16_t fg, uint16_t bg) {
+                   const char *text, bool inFlash, uint16_t fg, uint16_t bg, uint8_t shift) {
     if (!w || !h) return;
+    const uint8_t reps = 1 << shift;
     window(x, y, w, h);
     for (uint8_t r = 0; r < h; r++) {
       uint8_t c = 0;
-      uint8_t gy = r - ty; // wraps past GLYPH_H when r < ty
-      if (gy < GLYPH_H) {
+      uint8_t gy = (uint8_t)(r - ty) >> shift; // wraps past GLYPH_H when r < ty
+      if (r >= ty && gy < GLYPH_H) {
         uint8_t bit = 1 << gy;
         for (; c < tx && c < w; c++) pixel(bg);
         for (const char *p = text; c < w; p++) {
@@ -85,9 +87,9 @@ namespace {
           if (!code) break;
           if (code < FONT_FIRST || code > FONT_LAST) code = '?';
           const uint8_t *glyph = FONT + (code - FONT_FIRST) * 5;
-          for (uint8_t col = 0; col < GLYPH_W && c < w; col++, c++) {
-            bool on = col < 5 && (pgm_read_byte(glyph + col) & bit);
-            pixel(on ? fg : bg);
+          for (uint8_t col = 0; col < GLYPH_W; col++) {
+            uint16_t color = col < 5 && (pgm_read_byte(glyph + col) & bit) ? fg : bg;
+            for (uint8_t k = 0; k < reps && c < w; k++, c++) pixel(color);
           }
         }
       }
@@ -159,10 +161,15 @@ void Tft::fillRect(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint16_t color) {
 
 void Tft::textBox(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t tx, uint8_t ty,
                   const char *text, uint16_t fg, uint16_t bg) {
-  textBoxImpl(x, y, w, h, tx, ty, text, false, fg, bg);
+  textBoxImpl(x, y, w, h, tx, ty, text, false, fg, bg, 0);
 }
 
 void Tft::textBoxP(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t tx, uint8_t ty,
                    const char *text, uint16_t fg, uint16_t bg) {
-  textBoxImpl(x, y, w, h, tx, ty, text, true, fg, bg);
+  textBoxImpl(x, y, w, h, tx, ty, text, true, fg, bg, 0);
+}
+
+void Tft::textBox2x(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t tx, uint8_t ty,
+                    const char *text, uint16_t fg, uint16_t bg) {
+  textBoxImpl(x, y, w, h, tx, ty, text, false, fg, bg, 1);
 }

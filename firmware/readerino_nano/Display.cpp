@@ -11,7 +11,7 @@ namespace {
     COL_SPINE_0, COL_SPINE_1, COL_SPINE_2, COL_SPINE_3, COL_SPINE_4, COL_SPINE_5, COL_SPINE_6,
   };
 
-  // Width of the right-hand "3/52" box in the library header.
+  // Width of the right-hand "3/52" box in list headers.
   const uint8_t HEADER_RIGHT_W = 64;
   // Split of the reader's status row: title on the left, page on the right.
   const uint8_t STATUS_LEFT_W = 100;
@@ -49,12 +49,6 @@ namespace {
     cutCorner(x + w - 1, y + h - 1, -1, -1, outside);
   }
 
-  uint16_t progressColor(uint8_t percent) {
-    if (percent == 0) return COL_PROG_NEW;
-    if (percent >= 100) return COL_PROG_DONE;
-    return COL_PROG_MID;
-  }
-
   void messageImpl(const __FlashStringHelper *line1, const char *line2, bool line2InFlash, uint16_t accent) {
     const char *l1 = (const char *)line1;
     Tft::fillRect(0, 0, SCREEN_W, SCREEN_H, COL_BG);
@@ -80,14 +74,72 @@ void Display::begin() {
 }
 
 // ---------------------------------------------------------------------------
-// Library
+// Home menu
 // ---------------------------------------------------------------------------
 
-void Display::libraryHeader(int selected, int count, bool full) {
+namespace {
+  const char HOME_LABEL_0[] PROGMEM = GLYPH_BOOK;
+  const char HOME_LABEL_1[] PROGMEM = GLYPH_BOOKMARK;
+  const char HOME_LABEL_2[] PROGMEM = GLYPH_GEAR;
+  const char HOME_TEXT_0[] PROGMEM = "Library";
+  const char HOME_TEXT_1[] PROGMEM = "Bookmarks";
+  const char HOME_TEXT_2[] PROGMEM = "Settings";
+  const char *const HOME_ICONS[HOME_ITEMS] PROGMEM = {HOME_LABEL_0, HOME_LABEL_1, HOME_LABEL_2};
+  const char *const HOME_TEXTS[HOME_ITEMS] PROGMEM = {HOME_TEXT_0, HOME_TEXT_1, HOME_TEXT_2};
+  const uint16_t HOME_ICON_COLORS[HOME_ITEMS] PROGMEM = {COL_ICON_LIBRARY, COL_ICON_BOOKMARKS, COL_ICON_SETTINGS};
+}
+
+void Display::homeItem(uint8_t item, bool selected) {
+  const uint8_t y = HOME_BTN_Y + item * HOME_BTN_STEP;
+  const uint16_t bg = selected ? COL_MENU_SEL_BG : COL_MENU_BG;
+  const uint16_t fg = selected ? COL_MENU_SEL_TEXT : COL_MENU_TEXT;
+  const uint8_t ty = (HOME_BTN_H - 7) / 2;
+  Tft::textBoxP(HOME_BTN_X, y, HOME_BTN_TEXT_X, HOME_BTN_H, HOME_BTN_ICON_X, ty,
+                (const char *)pgm_read_ptr(&HOME_ICONS[item]),
+                selected ? fg : pgm_read_word(&HOME_ICON_COLORS[item]), bg);
+  Tft::textBoxP(HOME_BTN_X + HOME_BTN_TEXT_X, y, HOME_BTN_W - HOME_BTN_TEXT_X, HOME_BTN_H, 0, ty,
+                (const char *)pgm_read_ptr(&HOME_TEXTS[item]), fg, bg);
+  cutCorners(HOME_BTN_X, y, HOME_BTN_W, HOME_BTN_H, COL_BG);
+}
+
+void Display::home(uint8_t selected) {
+  static const char WORD[] PROGMEM = "READERINO";
+  const uint8_t n = sizeof(WORD) - 1;
+  const uint8_t cell = GLYPH_W * 2, th = GLYPH_H * 2;
+  const uint8_t x0 = (SCREEN_W - (n * cell - 2)) / 2;
+  const uint8_t ty = HOME_TITLE_Y;
+
+  Tft::fillRect(0, 0, SCREEN_W, ty, COL_BG);
+  Tft::fillRect(0, ty, x0, th, COL_BG);
+  char ch[2] = {0, 0};
+  for (uint8_t i = 0; i < n; i++) {
+    ch[0] = pgm_read_byte(&WORD[i]);
+    Tft::textBox2x(x0 + i * cell, ty, cell, th, 0, 0, ch, pgm_read_word(&SPINES[i % SPINE_COUNT]), COL_BG);
+  }
+  Tft::fillRect(x0 + n * cell, ty, SCREEN_W - x0 - n * cell, th, COL_BG);
+  Tft::textBoxP(0, ty + th, SCREEN_W, HOME_BTN_Y - ty - th, (SCREEN_W - textWidth(15)) / 2,
+                HOME_TAG_Y - ty - th, PSTR("pocket e-reader"), COL_MUTED, COL_BG);
+
+  for (uint8_t i = 0; i < HOME_ITEMS; i++) {
+    const uint8_t y = HOME_BTN_Y + i * HOME_BTN_STEP;
+    Tft::fillRect(0, y, HOME_BTN_X, HOME_BTN_H, COL_BG);
+    Tft::fillRect(HOME_BTN_X + HOME_BTN_W, y, SCREEN_W - HOME_BTN_X - HOME_BTN_W, HOME_BTN_H, COL_BG);
+    homeItem(i, i == selected);
+    const uint8_t gapY = y + HOME_BTN_H;
+    Tft::fillRect(0, gapY, SCREEN_W, i < HOME_ITEMS - 1 ? HOME_BTN_STEP - HOME_BTN_H : SCREEN_H - gapY, COL_BG);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Lists (library, bookmarks) and settings
+// ---------------------------------------------------------------------------
+
+void Display::listHeader(const __FlashStringHelper *title, int selected, int count, bool full) {
   if (full) {
+    const char *t = (const char *)title;
     Tft::textBoxP(0, 0, SCREEN_W - HEADER_RIGHT_W, LIB_HEADER_H, LIB_PAD_X, LIB_HEADER_TEXT_Y,
-                  PSTR("Library"), COL_HEADING, COL_BG);
-    Tft::fillRect(LIB_PAD_X, LIB_UNDERLINE_Y, textWidth(7), LIB_UNDERLINE_H, COL_ACCENT);
+                  t, COL_HEADING, COL_BG);
+    Tft::fillRect(LIB_PAD_X, LIB_UNDERLINE_Y, textWidth(strlen_P(t)), LIB_UNDERLINE_H, COL_ACCENT);
     Tft::fillRect(0, LIB_HEADER_H, SCREEN_W, LIB_LIST_Y - LIB_HEADER_H, COL_BG);
   }
   char s[12] = "";
@@ -100,7 +152,8 @@ void Display::libraryHeader(int selected, int count, bool full) {
                HEADER_RIGHT_W - LIB_PAD_X - textWidth(strlen(s)), LIB_HEADER_TEXT_Y, s, COL_MUTED, COL_BG);
 }
 
-void Display::libraryRow(uint8_t slot, const char *title, uint8_t percent, int index, bool selected) {
+void Display::listRow(uint8_t slot, const char *title, const char *right, uint16_t rightColor,
+                      int spineIndex, bool selected) {
   uint8_t y = LIB_LIST_Y + slot * LIB_ROW_H;
   uint16_t bg = selected ? COL_SEL_BG : COL_BG;
   uint16_t fg = selected ? COL_SEL_TEXT : COL_TEXT;
@@ -110,24 +163,19 @@ void Display::libraryRow(uint8_t slot, const char *title, uint8_t percent, int i
   char buf[LIB_TITLE_CHARS + 1];
   truncateInto(buf, title, LIB_TITLE_CHARS);
   Tft::textBox(LIB_ROW_X, y, titleW, LIB_ROW_H, LIB_TITLE_X - LIB_ROW_X, LIB_ROW_TEXT_Y, buf, fg, bg);
-
-  char pct[5];
-  itoa(percent, pct, 10);
-  strcat(pct, "%");
   Tft::textBox(LIB_ROW_X + titleW, y, LIB_PCT_W, LIB_ROW_H,
-               LIB_PCT_W - LIB_PCT_PAD_R - textWidth(strlen(pct)), LIB_ROW_TEXT_Y,
-               pct, progressColor(percent), bg);
+               LIB_PCT_W - LIB_PCT_PAD_R - textWidth(strlen(right)), LIB_ROW_TEXT_Y, right, rightColor, bg);
 
   Tft::fillRect(LIB_SPINE_X, y + LIB_ROW_TEXT_Y, LIB_SPINE_W, GLYPH_H - 1,
-                pgm_read_word(&SPINES[index % SPINE_COUNT]));
+                pgm_read_word(&SPINES[spineIndex % SPINE_COUNT]));
   if (selected) cutCorners(LIB_ROW_X, y, LIB_ROW_W, LIB_ROW_H, COL_BG);
 }
 
-void Display::libraryEmptyRow(uint8_t slot) {
+void Display::listEmptyRow(uint8_t slot) {
   Tft::fillRect(0, LIB_LIST_Y + slot * LIB_ROW_H, LIB_ROW_X + LIB_ROW_W, LIB_ROW_H, COL_BG);
 }
 
-void Display::libraryScrollbar(int windowStart, int count) {
+void Display::listScrollbar(int windowStart, int count) {
   const uint8_t top = LIB_LIST_Y;
   const uint8_t h = LIB_ROWS * LIB_ROW_H;
   const uint8_t left = LIB_ROW_X + LIB_ROW_W;
@@ -145,9 +193,30 @@ void Display::libraryScrollbar(int windowStart, int count) {
   Tft::fillRect(LIB_SCROLL_X, thumbY + thumbH, LIB_SCROLL_W, top + h - thumbY - thumbH, COL_TRACK);
 }
 
-void Display::libraryFooter() {
+void Display::listFooter(const __FlashStringHelper *hint) {
+  const char *t = (const char *)hint;
   const uint8_t y = LIB_LIST_Y + LIB_ROWS * LIB_ROW_H;
-  Tft::fillRect(0, y, SCREEN_W, SCREEN_H - y, COL_BG);
+  Tft::fillRect(0, y, SCREEN_W, LIB_HINT_Y - y, COL_BG);
+  Tft::textBoxP(0, LIB_HINT_Y, SCREEN_W, SCREEN_H - LIB_HINT_Y, (SCREEN_W - textWidth(strlen_P(t))) / 2, 0,
+                t, COL_MUTED, COL_BG);
+}
+
+void Display::listEmpty(const __FlashStringHelper *line1, const __FlashStringHelper *line2) {
+  const char *l1 = (const char *)line1;
+  const char *l2 = (const char *)line2;
+  const uint8_t bottom = LIB_LIST_Y + LIB_ROWS * LIB_ROW_H;
+  const uint8_t y2 = LIB_EMPTY_Y + GLYPH_H + 6;
+  Tft::fillRect(0, LIB_LIST_Y, SCREEN_W, LIB_EMPTY_Y - LIB_LIST_Y, COL_BG);
+  Tft::textBoxP(0, LIB_EMPTY_Y, SCREEN_W, y2 - LIB_EMPTY_Y, (SCREEN_W - textWidth(strlen_P(l1))) / 2, 0,
+                l1, COL_TEXT, COL_BG);
+  Tft::textBoxP(0, y2, SCREEN_W, bottom - y2, (SCREEN_W - textWidth(strlen_P(l2))) / 2, 0,
+                l2, COL_MUTED, COL_BG);
+}
+
+void Display::settings() {
+  listHeader(F("Settings"), 0, 0, true);
+  listEmpty(F("Nothing here yet"), F("Themes are coming"));
+  listFooter(F("Press " GLYPH_BUTTON " to go back"));
 }
 
 // ---------------------------------------------------------------------------
@@ -238,10 +307,11 @@ void Display::confirmExit() {
   cutCorners(yesX, by, DLG_BTN_W, DLG_BTN_H, COL_CARD);
 }
 
-void Display::toastBookmarked() {
+void Display::toast(const __FlashStringHelper *text, uint16_t bg) {
+  const char *t = (const char *)text;
   const uint8_t x = (SCREEN_W - TOAST_W) / 2;
-  Tft::textBoxP(x, TOAST_Y, TOAST_W, TOAST_H, (TOAST_W - textWidth(12)) / 2, (TOAST_H - 7) / 2,
-                PSTR(GLYPH_BOOKMARK " Bookmarked"), COL_TOAST_TEXT, COL_TOAST_BG);
+  Tft::textBoxP(x, TOAST_Y, TOAST_W, TOAST_H, (TOAST_W - textWidth(strlen_P(t))) / 2, (TOAST_H - 7) / 2,
+                t, COL_TOAST_TEXT, bg);
   cutCorners(x, TOAST_Y, TOAST_W, TOAST_H, COL_PAPER);
 }
 

@@ -71,6 +71,9 @@ T = parse_theme(FW / "Theme.h")
 FONT_FIRST, FONT_LAST, FONT = parse_font(FW / "Font.h")
 ELLIPSIS = "\x7f"
 BOOKMARK = "\x80"
+BOOK = "\x81"
+GEAR = "\x82"
+BUTTON = "\x83"
 
 
 def to_rgb(c565):
@@ -96,14 +99,15 @@ class Tft:
             for xx in range(max(x, 0), min(x + w, self.w)):
                 self.px[xx, yy] = rgb
 
-    def text_box(self, x, y, w, h, tx, ty, s, fg, bg):
+    def text_box(self, x, y, w, h, tx, ty, s, fg, bg, scale=1):
         """Fills a w*h box with bg and draws s at (tx, ty) inside it, clipped
-        to the box -- the single streamed window Tft::textBox sends."""
+        to the box -- the single streamed window Tft::textBox sends. scale 2
+        doubles every glyph pixel (Tft::textBox2x)."""
         fg_rgb, bg_rgb = to_rgb(fg), to_rgb(bg)
         for r in range(h):
-            gy = r - ty
+            gy = (r - ty) // scale if r >= ty else -1
             for c in range(w):
-                gx = c - tx
+                gx = (c - tx) // scale if c >= tx else -1
                 on = False
                 if 0 <= gy < T["GLYPH_H"] and gx >= 0:
                     i, col = divmod(gx, T["GLYPH_W"])
@@ -156,47 +160,47 @@ def progress_color(pct):
     return T["COL_PROG_MID"]
 
 
-def library_header(tft, selected, count, full=True):
-    right_w = 64
+HEADER_RIGHT_W = 64
+
+
+def list_header(tft, title, selected, count, full=True):
     if full:
-        label = "Library"
-        tft.text_box(0, 0, T["SCREEN_W"] - right_w, T["LIB_HEADER_H"],
-                     T["LIB_PAD_X"], T["LIB_HEADER_TEXT_Y"], label, T["COL_HEADING"], T["COL_BG"])
-        tft.fill_rect(T["LIB_PAD_X"], T["LIB_UNDERLINE_Y"], text_width(len(label)),
+        tft.text_box(0, 0, T["SCREEN_W"] - HEADER_RIGHT_W, T["LIB_HEADER_H"],
+                     T["LIB_PAD_X"], T["LIB_HEADER_TEXT_Y"], title, T["COL_HEADING"], T["COL_BG"])
+        tft.fill_rect(T["LIB_PAD_X"], T["LIB_UNDERLINE_Y"], text_width(len(title)),
                       T["LIB_UNDERLINE_H"], T["COL_ACCENT"])
         tft.fill_rect(0, T["LIB_HEADER_H"], T["SCREEN_W"], T["LIB_LIST_Y"] - T["LIB_HEADER_H"], T["COL_BG"])
     s = "%d/%d" % (selected + 1, count) if count else ""
-    tft.text_box(T["SCREEN_W"] - right_w, 0, right_w, T["LIB_HEADER_H"],
-                 right_w - T["LIB_PAD_X"] - text_width(len(s)), T["LIB_HEADER_TEXT_Y"],
+    tft.text_box(T["SCREEN_W"] - HEADER_RIGHT_W, 0, HEADER_RIGHT_W, T["LIB_HEADER_H"],
+                 HEADER_RIGHT_W - T["LIB_PAD_X"] - text_width(len(s)), T["LIB_HEADER_TEXT_Y"],
                  s, T["COL_MUTED"], T["COL_BG"])
 
 
-def library_row(tft, slot, entry, index, selected):
+def list_row(tft, slot, title, right, right_color, spine_index, selected):
     y = T["LIB_LIST_Y"] + slot * T["LIB_ROW_H"]
     row_h = T["LIB_ROW_H"]
-    if entry is None:
-        tft.fill_rect(0, y, T["LIB_ROW_X"] + T["LIB_ROW_W"], row_h, T["COL_BG"])
-        return
     bg = T["COL_SEL_BG"] if selected else T["COL_BG"]
     fg = T["COL_SEL_TEXT"] if selected else T["COL_TEXT"]
     title_w = T["LIB_ROW_W"] - T["LIB_PCT_W"]
 
     tft.fill_rect(0, y, T["LIB_ROW_X"], row_h, T["COL_BG"])
     tft.text_box(T["LIB_ROW_X"], y, title_w, row_h, T["LIB_TITLE_X"] - T["LIB_ROW_X"], T["LIB_ROW_TEXT_Y"],
-                 truncate(entry["title"], T["LIB_TITLE_CHARS"]), fg, bg)
-
-    pct = entry["pct"]
-    s = "%d%%" % pct
+                 truncate(title, T["LIB_TITLE_CHARS"]), fg, bg)
     tft.text_box(T["LIB_ROW_X"] + title_w, y, T["LIB_PCT_W"], row_h,
-                 T["LIB_PCT_W"] - T["LIB_PCT_PAD_R"] - text_width(len(s)), T["LIB_ROW_TEXT_Y"],
-                 s, progress_color(pct), bg)
+                 T["LIB_PCT_W"] - T["LIB_PCT_PAD_R"] - text_width(len(right)), T["LIB_ROW_TEXT_Y"],
+                 right, right_color, bg)
     tft.fill_rect(T["LIB_SPINE_X"], y + T["LIB_ROW_TEXT_Y"], T["LIB_SPINE_W"], T["GLYPH_H"] - 1,
-                  spine_color(index))
+                  spine_color(spine_index))
     if selected:
         cut_corners(tft, T["LIB_ROW_X"], y, T["LIB_ROW_W"], row_h, T["COL_BG"])
 
 
-def library_scrollbar(tft, window_start, count):
+def list_empty_row(tft, slot):
+    tft.fill_rect(0, T["LIB_LIST_Y"] + slot * T["LIB_ROW_H"], T["LIB_ROW_X"] + T["LIB_ROW_W"],
+                  T["LIB_ROW_H"], T["COL_BG"])
+
+
+def list_scrollbar(tft, window_start, count):
     top = T["LIB_LIST_Y"]
     h = T["LIB_ROWS"] * T["LIB_ROW_H"]
     left = T["LIB_ROW_X"] + T["LIB_ROW_W"]
@@ -213,21 +217,111 @@ def library_scrollbar(tft, window_start, count):
     tft.fill_rect(sx, thumb_y + thumb_h, sw, top + h - thumb_y - thumb_h, T["COL_TRACK"])
 
 
-def library_footer(tft):
+def list_footer(tft, hint):
+    """Everything below the list rows: padding plus a centered hint."""
+    W = T["SCREEN_W"]
     y = T["LIB_LIST_Y"] + T["LIB_ROWS"] * T["LIB_ROW_H"]
-    tft.fill_rect(0, y, T["SCREEN_W"], T["SCREEN_H"] - y, T["COL_BG"])
+    tft.fill_rect(0, y, W, T["LIB_HINT_Y"] - y, T["COL_BG"])
+    tft.text_box(0, T["LIB_HINT_Y"], W, T["SCREEN_H"] - T["LIB_HINT_Y"],
+                 (W - text_width(len(hint))) // 2, 0, hint, T["COL_MUTED"], T["COL_BG"])
 
 
-def library_screen(tft, entries, selected):
-    n = len(entries)
-    rows = T["LIB_ROWS"]
-    start = max(0, min(selected - rows + 1, n - rows)) if selected >= rows else 0
-    library_header(tft, selected, n)
-    for slot in range(rows):
-        idx = start + slot
-        library_row(tft, slot, entries[idx] if idx < n else None, idx, idx == selected)
-    library_scrollbar(tft, start, n)
-    library_footer(tft)
+def list_empty(tft, line1, line2):
+    """Replaces the rows and scrollbar of a list with a centered message."""
+    W = T["SCREEN_W"]
+    top = T["LIB_LIST_Y"]
+    bottom = T["LIB_LIST_Y"] + T["LIB_ROWS"] * T["LIB_ROW_H"]
+    y1 = T["LIB_EMPTY_Y"]
+    y2 = y1 + T["GLYPH_H"] + 6
+    tft.fill_rect(0, top, W, y1 - top, T["COL_BG"])
+    tft.text_box(0, y1, W, y2 - y1, (W - text_width(len(line1))) // 2, 0, line1, T["COL_TEXT"], T["COL_BG"])
+    tft.text_box(0, y2, W, bottom - y2, (W - text_width(len(line2))) // 2, 0, line2, T["COL_MUTED"], T["COL_BG"])
+
+
+def list_screen(tft, title, rows, selected, hint, empty=None):
+    """rows: list of (title, right, right_color, spine_index)."""
+    n = len(rows)
+    list_header(tft, title, selected, n)
+    if not rows:
+        list_empty(tft, *empty)
+    else:
+        per = T["LIB_ROWS"]
+        start = max(0, min(selected - per + 1, n - per)) if selected >= per else 0
+        for slot in range(per):
+            idx = start + slot
+            if idx < n:
+                list_row(tft, slot, *rows[idx], selected=idx == selected)
+            else:
+                list_empty_row(tft, slot)
+        list_scrollbar(tft, start, n)
+    list_footer(tft, hint)
+
+
+HINT_MENU = "Hold " + BUTTON + " for menu"
+HINT_BACK = "Press " + BUTTON + " to go back"
+
+
+def library_rows(entries):
+    return [(e["title"], "%d%%" % e["pct"], progress_color(e["pct"]), i) for i, e in enumerate(entries)]
+
+
+def bookmark_rows(bookmarks):
+    """bookmarks: list of (book_index, title, page)."""
+    return [(title, "p.%d" % page, T["COL_ACCENT"], book) for book, title, page in bookmarks]
+
+
+# ---------------------------------------------------------------------------
+# Home menu and settings
+# ---------------------------------------------------------------------------
+
+HOME_ITEMS = ((BOOK, "Library", "COL_ICON_LIBRARY"),
+              (BOOKMARK, "Bookmarks", "COL_ICON_BOOKMARKS"),
+              (GEAR, "Settings", "COL_ICON_SETTINGS"))
+
+
+def home_item(tft, i, selected):
+    icon, label, icon_col = HOME_ITEMS[i]
+    x, w, h = T["HOME_BTN_X"], T["HOME_BTN_W"], T["HOME_BTN_H"]
+    y = T["HOME_BTN_Y"] + i * T["HOME_BTN_STEP"]
+    bg = T["COL_MENU_SEL_BG"] if selected else T["COL_MENU_BG"]
+    fg = T["COL_MENU_SEL_TEXT"] if selected else T["COL_MENU_TEXT"]
+    ty = (h - 7) // 2
+    ix = T["HOME_BTN_ICON_X"]
+    tft.text_box(x, y, T["HOME_BTN_TEXT_X"], h, ix, ty, icon, fg if selected else T[icon_col], bg)
+    tft.text_box(x + T["HOME_BTN_TEXT_X"], y, w - T["HOME_BTN_TEXT_X"], h, 0, ty, label, fg, bg)
+    cut_corners(tft, x, y, w, h, T["COL_BG"])
+
+
+def home(tft, selected):
+    W, H = T["SCREEN_W"], T["SCREEN_H"]
+    word = "READERINO"
+    cell = T["GLYPH_W"] * 2
+    ww = len(word) * cell - 2
+    x0 = (W - ww) // 2
+    ty, th = T["HOME_TITLE_Y"], T["GLYPH_H"] * 2
+    tft.fill_rect(0, 0, W, ty, T["COL_BG"])
+    tft.fill_rect(0, ty, x0, th, T["COL_BG"])
+    for i, ch in enumerate(word):
+        tft.text_box(x0 + i * cell, ty, cell, th, 0, 0, ch, spine_color(i), T["COL_BG"], scale=2)
+    tft.fill_rect(x0 + len(word) * cell, ty, W - x0 - len(word) * cell, th, T["COL_BG"])
+    tag = "pocket e-reader"
+    tft.text_box(0, ty + th, W, T["HOME_BTN_Y"] - ty - th, (W - text_width(len(tag))) // 2,
+                 T["HOME_TAG_Y"] - ty - th, tag, T["COL_MUTED"], T["COL_BG"])
+    x, w = T["HOME_BTN_X"], T["HOME_BTN_W"]
+    for i in range(T["HOME_ITEMS"]):
+        y = T["HOME_BTN_Y"] + i * T["HOME_BTN_STEP"]
+        tft.fill_rect(0, y, x, T["HOME_BTN_H"], T["COL_BG"])
+        tft.fill_rect(x + w, y, W - x - w, T["HOME_BTN_H"], T["COL_BG"])
+        home_item(tft, i, i == selected)
+        gap_y = y + T["HOME_BTN_H"]
+        gap_h = (T["HOME_BTN_STEP"] - T["HOME_BTN_H"]) if i < T["HOME_ITEMS"] - 1 else H - gap_y
+        tft.fill_rect(0, gap_y, W, gap_h, T["COL_BG"])
+
+
+def settings(tft):
+    list_header(tft, "Settings", 0, 0)
+    list_empty(tft, "Nothing here yet", "Themes are coming")
+    list_footer(tft, HINT_BACK)
 
 
 def reader_top(tft):
@@ -312,12 +406,11 @@ def confirm_exit(tft):
         cut_corners(tft, bx, by, bw, bh, card)
 
 
-def toast(tft, msg):
+def toast(tft, msg, bg):
     w, h = T["TOAST_W"], T["TOAST_H"]
     x = (T["SCREEN_W"] - w) // 2
     y = T["TOAST_Y"]
-    tft.text_box(x, y, w, h, (w - text_width(len(msg))) // 2, (h - 7) // 2, msg,
-                 T["COL_TOAST_TEXT"], T["COL_TOAST_BG"])
+    tft.text_box(x, y, w, h, (w - text_width(len(msg))) // 2, (h - 7) // 2, msg, T["COL_TOAST_TEXT"], bg)
     cut_corners(tft, x, y, w, h, T["COL_PAPER"])
 
 
@@ -396,15 +489,26 @@ def main():
         fn(tft)
         scenes[name] = tft.img
 
-    scene("1_library", lambda t: library_screen(t, entries, 1))
-    scene("2_library_scrolled", lambda t: library_screen(t, entries, 10))
-    scene("3_reader", lambda t: reader_page(t, lines, first, title))
-    scene("4_reader_bookmarked", lambda t: reader_page(t, lines, first, title, bookmarked=True))
-    scene("5_toast", lambda t: (reader_page(t, lines, first, title, bookmarked=True),
-                                toast(t, BOOKMARK + " Bookmarked")))
-    scene("6_confirm", lambda t: (reader_page(t, lines, first, title), confirm_exit(t)))
-    scene("7_opening", lambda t: message(t, "Opening" + ELLIPSIS, title))
-    scene("8_sd_error", lambda t: message(t, "SD card error", "Press any button", T["COL_ERROR"]))
+    bms = [(1, entries[1]["title"], 4), (1, entries[1]["title"], 17), (4, entries[4]["title"], 2),
+           (7, entries[7]["title"], 31), (9 % len(entries), entries[9 % len(entries)]["title"], 12)]
+
+    scene("01_home", lambda t: home(t, 0))
+    scene("02_home_bookmarks", lambda t: home(t, 1))
+    scene("03_library", lambda t: list_screen(t, "Library", library_rows(entries), 1, HINT_MENU))
+    scene("04_library_scrolled", lambda t: list_screen(t, "Library", library_rows(entries), 10, HINT_MENU))
+    scene("05_bookmarks", lambda t: list_screen(t, "Bookmarks", bookmark_rows(bms), 2, HINT_MENU))
+    scene("06_bookmarks_empty", lambda t: list_screen(t, "Bookmarks", [], 0, HINT_MENU,
+                                                        ("No bookmarks yet", "Hold " + BUTTON + " on a page")))
+    scene("07_settings", settings)
+    scene("08_reader", lambda t: reader_page(t, lines, first, title))
+    scene("09_reader_bookmarked", lambda t: reader_page(t, lines, first, title, bookmarked=True))
+    scene("10_toast_added", lambda t: (reader_page(t, lines, first, title, bookmarked=True),
+                                       toast(t, BOOKMARK + " Bookmarked", T["COL_TOAST_BG"])))
+    scene("11_toast_removed", lambda t: (reader_page(t, lines, first, title),
+                                         toast(t, "Removed", T["COL_TOAST_REMOVED_BG"])))
+    scene("12_confirm", lambda t: (reader_page(t, lines, first, title), confirm_exit(t)))
+    scene("13_opening", lambda t: message(t, "Opening" + ELLIPSIS, title))
+    scene("14_sd_error", lambda t: message(t, "SD card error", "Press any button", T["COL_ERROR"]))
 
     s = args.scale
     for name, img in scenes.items():

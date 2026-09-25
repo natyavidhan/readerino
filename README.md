@@ -22,10 +22,23 @@ Both read the same library format, produced by:
 
 ![screens](docs/nano-screens.png)
 
-A dark library screen (colored book spines, per-book progress that turns
-amber while you're reading and green when you finish, a scrollbar, a
-`3/52` counter) and a warm-paper reader (24 columns x 10 lines, a progress
+A home menu, a dark library screen (colored book spines, per-book progress
+that turns amber while you're reading and green when you finish, a
+scrollbar, a `3/52` counter), a bookmarks list across every book, and a
+warm-paper reader (24 columns x 10 lines, a progress
 bar, the title, the page number, and a red ribbon on bookmarked pages).
+
+### Controls
+
+Three buttons: up, center, down.
+
+- **Menu** — up/down to pick Library, Bookmarks or Settings, center to open
+- **Library / Bookmarks** — up/down to move, center to open the book (a
+  bookmark opens at its page), hold center to go back to the menu
+- **Reading** — down/up to turn pages; hold center to bookmark the page, or
+  to remove the bookmark if it already has one; tap center for "Back to
+  library?" (down = yes and save your place, up = keep reading)
+- **Settings** — empty for now, center goes back
 
 ### Hardware and pins
 

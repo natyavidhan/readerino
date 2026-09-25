@@ -27,5 +27,6 @@ namespace Storage {
   int bookCount();
   bool getEntry(int index, CatalogEntry &out);
   void setPosition(int index, uint32_t line);
-  void addBookmark(int index, uint32_t line);
+  void addBookmark(int index, uint32_t line);    // drops the oldest when full
+  void removeBookmark(int index, uint32_t line);
 }
