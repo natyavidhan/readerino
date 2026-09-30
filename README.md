@@ -74,8 +74,10 @@ the two broke the card).
 
 The display driver (`Tft.cpp`) is a small hardware-SPI ST7735 driver
 written for this build instead of Adafruit_GFX: every text box is streamed
-as one address window with its background, so each pixel is sent once, and
-it leaves ~8KB of flash free for future features.
+as one address window with its background, so each pixel is sent once. It
+freed ~8KB of flash, which the menu, bookmarks and media player have since
+used up: `firmware/flash.sh --check` reports what's left below the
+bootloader (about 780 bytes as of the colour-video player).
 
 ## Designing screens on a PC
 
