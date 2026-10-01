@@ -9,7 +9,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-FQBN=arduino:avr:nano:cpu=atmega328old # clone Nanos with the old bootloader
+# Clone Nanos usually have the old bootloader (57600 baud); newer ones run
+# optiboot (115200). The compiled code is the same either way -- only the
+# upload speed differs -- so upload tries the old one, then the new one.
+FQBN=arduino:avr:nano:cpu=atmega328old
 BUILD=$(mktemp -d)
 trap 'rm -rf "$BUILD"' EXIT
 
@@ -37,4 +40,7 @@ done
 [ -n "$PORT" ] || { echo "Nano (FT232R) not found on any /dev/ttyUSB*" >&2; exit 1; }
 
 echo "uploading to $PORT"
-arduino-cli upload -p "$PORT" --fqbn "$FQBN" --input-dir "$BUILD" readerino_nano
+if ! arduino-cli upload -p "$PORT" --fqbn "$FQBN" --input-dir "$BUILD" readerino_nano; then
+  echo "no answer from the old bootloader -- trying the new (optiboot) one"
+  arduino-cli upload -p "$PORT" --fqbn arduino:avr:nano:cpu=atmega328 --input-dir "$BUILD" readerino_nano
+fi
